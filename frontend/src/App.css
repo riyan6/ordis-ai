@@ -1,0 +1,8 @@
+/* App.css intentionally left empty.
+
+All layout lives in style.css. The template shipped a stub
+`.app { flex-direction: column }` here that — because App.tsx imports
+this file AFTER style.css (via main.tsx import order) — overrode the
+row layout in style.css and stacked the sidebar above the content.
+Keeping this file empty avoids that entire class of bug.
+*/

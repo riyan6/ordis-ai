@@ -1,0 +1,11 @@
+build/bin/
+frontend/dist/
+frontend/node_modules/
+node_modules/
+*.exe
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
