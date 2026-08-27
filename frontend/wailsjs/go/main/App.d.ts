@@ -8,9 +8,15 @@ export function AddWorkspace(arg1:string):Promise<main.WorkspaceListResult>;
 
 export function AddWorkspaceDialog():Promise<main.WorkspaceListResult>;
 
+export function DeleteProvider(arg1:string):Promise<Array<main.ProviderInfo>>;
+
+export function DeleteSession(arg1:string):Promise<void>;
+
 export function GetSnapshot():Promise<main.Snapshot>;
 
 export function GetWorkspace():Promise<main.WorkspaceInfo>;
+
+export function ListProviders():Promise<Array<main.ProviderInfo>>;
 
 export function ListSessions():Promise<Array<main.SessionInfo>>;
 

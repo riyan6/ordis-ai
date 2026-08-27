@@ -6,27 +6,25 @@
  * - Clean, borderless header & readable typography
  * - Unified Model + Thinking picker in input composer
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePiSession, type SessionInfo, type WorkspaceRecord } from "./use-pi-session";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { usePiSession, type ProviderInfo } from "./use-pi-session";
 import { Message, WorkingIndicator } from "./components/Message";
 import {
 	Plus,
 	Folder,
-	ChevronRight,
-	ChevronDown,
-	ChevronUp,
-	ArrowUp,
-	Square,
-	Check,
 	PanelLeftClose,
 	PanelLeft,
 	FolderPlus,
 	Settings,
 	MoreHorizontal,
+	Trash2,
+	Bot,
+	Palette,
+	Check,
+	Info,
 	X
 } from "lucide-react";
-
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+import { Composer } from "./components/Composer";
 
 export default function App() {
 	const {
@@ -42,6 +40,7 @@ export default function App() {
 		agentBusy,
 		sessions,
 		workspaces,
+		providers,
 		currentWorkspace,
 		switching,
 		start,
@@ -52,7 +51,10 @@ export default function App() {
 		newSession,
 		loadSessions,
 		loadWorkspaces,
+		loadProviders,
 		resume,
+		deleteSession,
+		deleteProvider,
 		switchWorkspace,
 		addWorkspace,
 		switchModel,
@@ -66,8 +68,8 @@ export default function App() {
 	const [expandedWs, setExpandedWs] = useState<string>(currentWorkspace || "");
 
 	useEffect(() => {
-		if (currentWorkspace && !expandedWs) setExpandedWs(currentWorkspace);
-	}, [currentWorkspace, expandedWs]);
+		if (currentWorkspace) setExpandedWs(currentWorkspace);
+	}, [currentWorkspace]);
 
 	const listRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -125,6 +127,25 @@ export default function App() {
 	};
 
 	const isMac = typeof navigator !== "undefined" && /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+	const composerCommon = {
+		input,
+		onInputChange: setInput,
+		onSubmit,
+		onKeyDown,
+		inputRef,
+		agentBusy,
+		onAbort: () => void abort(),
+		models,
+		currentModel,
+		currentThinkingLevel,
+		onSwitchModel: switchModel,
+		onChangeThinking: changeThinking,
+		onRefreshModels: refresh,
+		workspaces,
+		currentWorkspace,
+		onAddWorkspace: addWorkspace,
+	};
 
 	return (
 		<div className="flex h-screen w-screen overflow-hidden bg-white text-[#1a1a1a] select-none">
@@ -238,20 +259,32 @@ export default function App() {
 													{wsSess.slice(0, 15).map((s) => {
 														const isCurrentSession = state?.sessionId === s.id;
 														return (
-															<button
+															<div
 																key={s.id}
-																onClick={() => void resume(s)}
-																className={`w-full flex items-center justify-between px-3 py-1.5 pl-7 rounded-xl text-[13.5px] text-left transition-colors duration-150 ${
+																className={`group/session w-full flex items-center rounded-xl text-[13.5px] transition-colors duration-150 ${
 																	isCurrentSession
 																		? "bg-[#ececec] font-medium text-neutral-900"
 																		: "text-neutral-700 hover:bg-[#f0f0f0] hover:text-neutral-900"
 																}`}
-																title={s.name || s.id}
 															>
-																<span className="truncate flex-1 pr-1.5">
-																	{s.name || "未命名会话"}
-																</span>
-															</button>
+																<button
+																	type="button"
+																	onClick={() => void resume(s)}
+																	className="min-w-0 flex-1 px-3 py-1.5 pl-7 text-left"
+																	title={s.name || s.id}
+																>
+																	<span className="block truncate">{s.name || "未命名会话"}</span>
+																</button>
+																<button
+																	type="button"
+																	onClick={() => void deleteSession(s)}
+																	className="mr-1 hidden group-hover/session:flex p-1 rounded-md text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+																	title="删除会话"
+																	aria-label={`删除会话 ${s.name || s.id}`}
+																>
+																	<Trash2 className="w-3.5 h-3.5" />
+																</button>
+															</div>
 														);
 													})}
 
@@ -272,7 +305,10 @@ export default function App() {
 					{/* Aside Footer: Clean Settings Entry (No line above) */}
 					<div className="p-2.5 mt-auto">
 						<button
-							onClick={() => setSettingsOpen(true)}
+							onClick={() => {
+								setSettingsOpen(true);
+								void loadProviders();
+							}}
 							className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[14px] text-neutral-600 hover:text-neutral-900 hover:bg-[#f0f0f0] transition-colors duration-150"
 						>
 							<Settings className="w-4 h-4 text-neutral-500" />
@@ -343,83 +379,32 @@ export default function App() {
 
 					{/* Switching Workspace / Session State */}
 					{switching && (
-						<div className="flex-1 flex items-center justify-center p-6">
-							<div className="text-center space-y-2">
-								<p className="text-[13.5px] text-neutral-400 font-medium">正在切换会话与工作区…</p>
+						<div className="absolute inset-0 z-20 flex items-center justify-center p-6 bg-white/70 backdrop-blur-[1px]">
+							<div className="rounded-lg bg-white/90 px-4 py-2 shadow-sm border border-black/[0.06]">
+								<p className="text-[13.5px] text-neutral-500 font-medium">正在切换会话与工作区…</p>
 							</div>
 						</div>
 					)}
 
 					{/* Running Content */}
-					{running && !switching && (
+					{running && (
 						<>
 							{/* Empty / Welcome State */}
 							{messages.length === 0 ? (
 								<div className="flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
-									<div className="max-w-xl w-full space-y-4 text-center">
-										{/* Workspace Decoration & Selector Block */}
-										<div className="flex items-center justify-center">
-											<WorkspacePickerPill
-												workspaces={workspaces}
-												currentWorkspace={currentWorkspace}
-												onSelectWorkspace={async (path) => {
-													if (path !== currentWorkspace) {
-														await switchWorkspace(path);
-													}
-													await newSession();
-													setExpandedWs(path);
-												}}
-												onAddWorkspace={addWorkspace}
-											/>
-										</div>
-
-										{/* Clean Center Composer (Pure White + Elegant Shadow, NO Gray) */}
-										<div className="bg-white border border-black/[0.08] shadow-[0_4px_24px_rgba(0,0,0,0.06),0_1px_4px_rgba(0,0,0,0.04)] rounded-2xl p-4 text-left space-y-2">
-											<textarea
-												ref={inputRef}
-												value={input}
-												onChange={(e) => {
-													setInput(e.target.value);
-													e.target.style.height = "auto";
-													e.target.style.height = `${Math.min(e.target.scrollHeight, 180)}px`;
-												}}
-												onKeyDown={onKeyDown}
-												placeholder="随心输入需求或指令，让 Pi 协助您编写、分析或重构代码..."
-												className="w-full bg-transparent text-neutral-900 placeholder:text-neutral-400 text-[15px] focus:outline-hidden resize-none min-h-[64px] max-h-48 leading-relaxed border-0 outline-none ring-0 shadow-none"
-												rows={2}
-											/>
-
-											<div className="flex items-center justify-between pt-1">
-												{/* Left: Plus button + Model/Thinking Picker */}
-												<div className="flex items-center gap-1.5">
-													<button
-														type="button"
-														className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-800 hover:bg-[#f0f0f0] transition-colors"
-														title="添加附件或扩展"
-													>
-														<Plus className="w-4 h-4" />
-													</button>
-
-													<ModelThinkingPicker
-														models={models}
-														currentModel={currentModel}
-														currentThinkingLevel={currentThinkingLevel}
-														onSwitchModel={switchModel}
-														onChangeThinking={changeThinking}
-														onRefresh={refresh}
-													/>
-												</div>
-
-												<button
-													onClick={onSubmit}
-													disabled={!input.trim()}
-													className="w-8 h-8 rounded-full bg-neutral-900 hover:bg-neutral-800 disabled:opacity-20 text-white flex items-center justify-center transition-colors duration-150 disabled:cursor-not-allowed shadow-xs"
-													title="发送 (Enter)"
-												>
-													<ArrowUp className="w-4 h-4" />
-												</button>
-											</div>
-										</div>
+									<div className="max-w-4xl w-full">
+										<Composer
+											variant="welcome"
+											{...composerCommon}
+							onSelectWorkspace={async (path) => {
+								if (path !== currentWorkspace) {
+									await switchWorkspace(path);
+								} else {
+									await newSession();
+								}
+								setExpandedWs(path);
+											}}
+										/>
 									</div>
 								</div>
 							) : (
@@ -429,7 +414,7 @@ export default function App() {
 										ref={listRef}
 										className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-4 select-text"
 									>
-										<div className="max-w-3xl mx-auto space-y-4">
+										<div className="max-w-4xl mx-auto space-y-4">
 											{messages.map((m) => (
 												<Message key={m.id} message={m} streaming={m.streaming} />
 											))}
@@ -443,67 +428,19 @@ export default function App() {
 										</div>
 									</div>
 
-									{/* Sticky Bottom Floating Composer (Pure White + Soft Floating Shadow) */}
+									{/* Sticky Bottom Composer */}
 									<div className="p-4 bg-white flex-shrink-0">
-										<div className="max-w-3xl mx-auto">
-											<div className="bg-white border border-black/[0.08] shadow-[0_4px_24px_rgba(0,0,0,0.06),0_1px_4px_rgba(0,0,0,0.04)] rounded-2xl p-3 transition-colors space-y-1.5">
-												<textarea
-													ref={inputRef}
-													value={input}
-													onChange={(e) => {
-														setInput(e.target.value);
-														e.target.style.height = "auto";
-														e.target.style.height = `${Math.min(e.target.scrollHeight, 140)}px`;
-													}}
-													onKeyDown={onKeyDown}
-													placeholder="随心输入 (Shift+Enter 换行)..."
-													className="w-full bg-transparent text-neutral-900 placeholder:text-neutral-400 text-[15px] focus:outline-hidden resize-none min-h-[40px] max-h-36 leading-relaxed border-0 outline-none ring-0 shadow-none"
-													rows={1}
-												/>
-
-												<div className="flex items-center justify-between pt-1">
-													{/* Left: Plus button + Model/Thinking Picker */}
-													<div className="flex items-center gap-1.5">
-														<button
-															type="button"
-															className="p-1.5 rounded-lg text-neutral-400 hover:text-neutral-800 hover:bg-[#f0f0f0] transition-colors"
-															title="添加附件或扩展"
-														>
-															<Plus className="w-4 h-4" />
-														</button>
-
-														<ModelThinkingPicker
-															models={models}
-															currentModel={currentModel}
-															currentThinkingLevel={currentThinkingLevel}
-															onSwitchModel={switchModel}
-															onChangeThinking={changeThinking}
-															onRefresh={refresh}
-														/>
-													</div>
-
-													<div className="flex items-center gap-1.5">
-														{agentBusy ? (
-															<button
-																onClick={() => void abort()}
-																className="w-8 h-8 rounded-full bg-rose-500 hover:bg-rose-600 active:bg-rose-700 text-white flex items-center justify-center transition-colors duration-150 wails-no-drag shadow-xs cursor-pointer"
-																title="停止生成 (Esc)"
-															>
-																<Square className="w-3.5 h-3.5 fill-white text-white" />
-															</button>
-														) : (
-															<button
-																onClick={onSubmit}
-																disabled={!input.trim()}
-																className="w-8 h-8 rounded-full bg-neutral-900 hover:bg-neutral-800 disabled:opacity-20 text-white flex items-center justify-center transition-colors duration-150 disabled:cursor-not-allowed wails-no-drag shadow-xs"
-																title="发送 (Enter)"
-															>
-																<ArrowUp className="w-4 h-4" />
-															</button>
-														)}
-													</div>
-												</div>
-											</div>
+										<div className="max-w-4xl mx-auto">
+											<Composer
+												variant="chat"
+												{...composerCommon}
+												onSelectWorkspace={async (path) => {
+													if (path !== currentWorkspace) {
+														await switchWorkspace(path);
+													}
+													setExpandedWs(path);
+												}}
+											/>
 										</div>
 									</div>
 								</div>
@@ -517,13 +454,11 @@ export default function App() {
 			{settingsOpen && (
 				<SettingsModal
 					onClose={() => setSettingsOpen(false)}
-					currentWorkspace={currentWorkspace}
 					currentModel={currentModel}
-					currentThinkingLevel={currentThinkingLevel}
 					models={models}
+					providers={providers}
 					onSwitchModel={switchModel}
-					onChangeThinking={changeThinking}
-					onOpenWorkspace={addWorkspace}
+					onDeleteProvider={deleteProvider}
 				/>
 			)}
 
@@ -533,399 +468,284 @@ export default function App() {
 	);
 }
 
-/**
- * Workspace Selector Pill / Decoration Block for the Welcome State
- */
-function WorkspacePickerPill({
-	workspaces,
-	currentWorkspace,
-	onSelectWorkspace,
-	onAddWorkspace,
-}: {
-	workspaces: WorkspaceRecord[];
-	currentWorkspace: string;
-	onSelectWorkspace: (path: string) => Promise<void>;
-	onAddWorkspace: () => Promise<void>;
-}) {
-	const [open, setOpen] = useState(false);
-	const ref = useRef<HTMLDivElement>(null);
-
-	useEffect(() => {
-		function handleClickOutside(e: MouseEvent) {
-			if (ref.current && !ref.current.contains(e.target as Node)) {
-				setOpen(false);
-			}
-		}
-		document.addEventListener("mousedown", handleClickOutside);
-		return () => document.removeEventListener("mousedown", handleClickOutside);
-	}, []);
-
-	const activeWs = workspaces.find((w) => w.path === currentWorkspace);
-	const displayName =
-		activeWs?.name ||
-		(currentWorkspace ? currentWorkspace.replace(/\\/g, "/").split("/").pop() : "选择工作区");
-
-	return (
-		<div className="relative inline-flex" ref={ref}>
-			{/* Pill Button: Clean light pill above the input box */}
-			<button
-				type="button"
-				onClick={() => setOpen(!open)}
-				className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#f4f4f5] hover:bg-[#eaeaea] text-neutral-800 text-[13px] font-medium transition-colors duration-150 cursor-pointer select-none border border-black/[0.04] shadow-2xs"
-				title="选择工作区"
-			>
-				<Folder className="w-3.5 h-3.5 text-neutral-600" />
-				<span className="truncate max-w-[220px]">{displayName}</span>
-				<ChevronDown className="w-3.5 h-3.5 text-neutral-400" />
-			</button>
-
-			{/* Dropdown Popover */}
-			{open && (
-				<div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 z-50 w-72 bg-white border border-black/[0.08] rounded-2xl shadow-xl p-1.5 select-none text-left animate-in fade-in zoom-in-95 duration-100">
-					<div className="px-2.5 py-1 text-xs font-semibold text-neutral-400">
-						选择工作区
-					</div>
-					<div className="max-h-60 overflow-y-auto space-y-0.5 mt-0.5">
-						{workspaces.map((w) => {
-							const isSelected = w.path === currentWorkspace;
-							return (
-								<button
-									key={w.id}
-									type="button"
-									onClick={() => {
-										void onSelectWorkspace(w.path);
-										setOpen(false);
-									}}
-									className={`w-full text-left px-3 py-2 rounded-xl text-[13px] flex items-center justify-between transition-colors ${
-										isSelected
-											? "bg-[#f0f0f0] text-neutral-900 font-medium"
-											: "text-neutral-700 hover:bg-[#f5f5f5] hover:text-neutral-900"
-									}`}
-								>
-									<div className="flex items-center gap-2 min-w-0 flex-1 pr-1">
-										<Folder className="w-3.5 h-3.5 text-neutral-500 flex-shrink-0" />
-										<span className="truncate">{w.name}</span>
-									</div>
-									{isSelected && <Check className="w-3.5 h-3.5 text-neutral-800 flex-shrink-0" />}
-								</button>
-							);
-						})}
-
-						{workspaces.length === 0 && (
-							<div className="px-3 py-2 text-xs text-neutral-400">
-								暂无已注册工作区
-							</div>
-						)}
-					</div>
-
-					<div className="pt-1 mt-1 border-t border-black/[0.06]">
-						<button
-							type="button"
-							onClick={() => {
-								setOpen(false);
-								void onAddWorkspace();
-							}}
-							className="w-full text-left px-3 py-1.5 rounded-xl text-[13px] text-neutral-600 hover:text-neutral-900 hover:bg-[#f5f5f5] flex items-center gap-2 transition-colors cursor-pointer"
-						>
-							<FolderPlus className="w-3.5 h-3.5 text-neutral-500" />
-							<span>添加新工作区...</span>
-						</button>
-					</div>
-				</div>
-			)}
-		</div>
-	);
-}
-
-/**
- * Unified Model + Thinking Picker (Integrated inside the input composer)
- */
-function ModelThinkingPicker({
-	models,
-	currentModel,
-	currentThinkingLevel,
-	onSwitchModel,
-	onChangeThinking,
-	onRefresh,
-}: {
-	models: Array<{ id: string; name: string; provider: string }>;
-	currentModel?: { id: string; name?: string; provider?: string } | null;
-	currentThinkingLevel: string;
-	onSwitchModel: (id: string) => Promise<void>;
-	onChangeThinking: (level: string) => Promise<void>;
-	onRefresh?: () => void;
-}) {
-	const [open, setOpen] = useState(false);
-	const [hoveredModelId, setHoveredModelId] = useState<string | null>(null);
-	const menuRef = useRef<HTMLDivElement>(null);
-
-	// Close on outside click
-	useEffect(() => {
-		function handleClickOutside(e: MouseEvent) {
-			if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-				setOpen(false);
-				setHoveredModelId(null);
-			}
-		}
-		document.addEventListener("mousedown", handleClickOutside);
-		return () => document.removeEventListener("mousedown", handleClickOutside);
-	}, []);
-
-	// Keyboard shortcut: Cmd + / or Ctrl + /
-	useEffect(() => {
-		function handleKeyDown(e: KeyboardEvent) {
-			if ((e.metaKey || e.ctrlKey) && e.key === "/") {
-				e.preventDefault();
-				setOpen((prev) => {
-					if (!prev) onRefresh?.();
-					return !prev;
-				});
-			}
-		}
-		document.addEventListener("keydown", handleKeyDown);
-		return () => document.removeEventListener("keydown", handleKeyDown);
-	}, [onRefresh]);
-
-	const thinkingDisplayName = (lvl: string) => {
-		if (!lvl || lvl === "off") return "";
-		if (lvl === "xhigh") return "XHigh";
-		return lvl.charAt(0).toUpperCase() + lvl.slice(1);
-	};
-
-	// Fallback to currentModel if models list is still populating
-	const displayModels: Array<{ id: string; name: string; provider?: string }> = useMemo(() => {
-		if (models && models.length > 0) return models;
-		if (currentModel) {
-			return [{ id: currentModel.id, name: currentModel.name || currentModel.id, provider: currentModel.provider || "" }];
-		}
-		return [];
-	}, [models, currentModel]);
-
-	const thinkingOptions = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-	return (
-		<div className="relative inline-flex items-center gap-1.5" ref={menuRef}>
-			{/* Model + Thinking Button: Completely clean/flat by default, subtle hover */}
-			<button
-				type="button"
-				onClick={() => {
-					setOpen(!open);
-					if (!open) {
-						onRefresh?.();
-						setHoveredModelId(null);
-					}
-				}}
-				className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-neutral-800 hover:text-neutral-950 text-[13.5px] font-medium transition-colors duration-150 cursor-pointer select-none ${
-					open ? "bg-[#e8e8e8] text-neutral-900" : "bg-transparent hover:bg-[#e8e8e8]"
-				}`}
-				title="选择模型 (⌘ /)"
-			>
-				<span>{currentModel?.name || "选择模型"}</span>
-				{currentThinkingLevel && currentThinkingLevel !== "off" && (
-					<span className="text-neutral-400 font-normal text-xs ml-0.5">
-						{thinkingDisplayName(currentThinkingLevel)}
-					</span>
-				)}
-				<ChevronUp className="w-3.5 h-3.5 text-neutral-400 ml-0.5" />
-			</button>
-
-			{/* The Popover Menu */}
-			{open && (
-				<div className="absolute bottom-full mb-2 left-0 z-50 w-68 bg-white border border-black/[0.08] rounded-2xl shadow-xl p-1.5 select-none overflow-visible">
-					<div className="px-2.5 py-1 text-xs font-semibold text-neutral-400">
-						Model
-					</div>
-					<div className="space-y-0.5 mt-0.5">
-						{displayModels.map((m) => {
-							const isSelected = currentModel?.id === m.id;
-							const isHovered = hoveredModelId === m.id;
-
-							return (
-								<div
-									key={m.id}
-									className="relative"
-									onMouseEnter={() => setHoveredModelId(m.id)}
-									onMouseLeave={() => setHoveredModelId(null)}
-								>
-									{/* Model Item Row */}
-									<button
-										type="button"
-										onClick={() => {
-											void onSwitchModel(m.id);
-											setOpen(false);
-											setHoveredModelId(null);
-										}}
-										className={`w-full text-left px-3 py-2 rounded-xl text-[13.5px] flex items-center justify-between transition-colors ${
-											isHovered
-												? "bg-[#f0f0f0] text-neutral-900 font-medium"
-												: isSelected
-												? "bg-[#f7f7f8] text-neutral-900 font-medium"
-												: "text-neutral-700 hover:bg-[#f0f0f0] hover:text-neutral-900"
-										}`}
-									>
-										<div className="flex items-center gap-1.5 truncate flex-1 min-w-0 pr-1">
-											<span className="truncate">{m.name}</span>
-											{isSelected && currentThinkingLevel !== "off" && (
-												<span className="text-neutral-400 text-xs font-normal">
-													{thinkingDisplayName(currentThinkingLevel)}
-												</span>
-											)}
-										</div>
-
-										<div className="flex items-center gap-1 flex-shrink-0">
-											{isSelected && <Check className="w-3.5 h-3.5 text-neutral-800" />}
-											<ChevronRight className="w-3.5 h-3.5 text-neutral-400" />
-										</div>
-									</button>
-
-									{/* Thinking Submenu — Positioned directly at top-0 of this row, perfectly adjacent */}
-									{isHovered && (
-										<div className="absolute left-full top-0 ml-1.5 w-28 bg-white border border-black/[0.08] rounded-xl shadow-xl p-1 z-50 animate-in fade-in duration-100">
-											{thinkingOptions.map((lvl) => {
-												const isLvlSelected = isSelected && currentThinkingLevel === lvl;
-												return (
-													<button
-														key={lvl}
-														type="button"
-														onClick={(e) => {
-															e.stopPropagation();
-															void onSwitchModel(m.id);
-															void onChangeThinking(lvl);
-															setOpen(false);
-															setHoveredModelId(null);
-														}}
-														className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between transition-colors ${
-															isLvlSelected
-																? "bg-[#f0f0f0] font-medium text-neutral-900"
-																: "text-neutral-600 hover:bg-[#f0f0f0] hover:text-neutral-900"
-														}`}
-													>
-														<span>{thinkingDisplayName(lvl) || "Off"}</span>
-														{isLvlSelected && (
-															<Check className="w-3 h-3 text-neutral-800" />
-														)}
-													</button>
-												);
-											})}
-										</div>
-									)}
-								</div>
-							);
-						})}
-
-						{displayModels.length === 0 && (
-							<div className="px-3 py-2 text-xs text-neutral-400">
-								暂无可用模型
-							</div>
-						)}
-					</div>
-				</div>
-			)}
-		</div>
-	);
-}
-
-/**
- * Clean Settings Modal
- */
+/** Settings window with navigation on the left and page content on the right. */
 function SettingsModal({
 	onClose,
-	currentWorkspace,
 	currentModel,
-	currentThinkingLevel,
 	models,
+	providers,
 	onSwitchModel,
-	onChangeThinking,
-	onOpenWorkspace,
+	onDeleteProvider,
 }: {
 	onClose: () => void;
-	currentWorkspace: string;
 	currentModel?: { id: string; name?: string; provider?: string } | null;
-	currentThinkingLevel: string;
 	models: Array<{ id: string; name: string; provider: string }>;
-	onSwitchModel: (id: string) => Promise<void>;
-	onChangeThinking: (level: string) => Promise<void>;
-	onOpenWorkspace: () => Promise<void>;
+	providers: ProviderInfo[];
+	onSwitchModel: (provider: string, modelId: string) => Promise<void>;
+	onDeleteProvider: (providerID: string) => Promise<void>;
 }) {
+	const [page, setPage] = useState<"providers" | "theme">("providers");
+	const [selectedProvider, setSelectedProvider] = useState("");
+	const [deleting, setDeleting] = useState(false);
+	const [deleteError, setDeleteError] = useState("");
+
+	const displayProviders: ProviderInfo[] = providers
+		.filter((provider) => !provider.disabled)
+		.map((provider) => ({ ...provider }));
+	for (const model of models) {
+		if (!displayProviders.some((provider) => provider.id === model.provider)) {
+			displayProviders.push({
+				id: model.provider,
+				hasCredential: false,
+				hasCustomConfig: false,
+				default: false,
+				deletable: true,
+				disabled: false,
+			});
+		}
+	}
+	displayProviders.sort((a, b) => {
+		if (a.default !== b.default) return a.default ? -1 : 1;
+		return a.id.localeCompare(b.id);
+	});
+
+	useEffect(() => {
+		if (displayProviders.some((provider) => provider.id === selectedProvider)) return;
+		const preferred =
+			displayProviders.find((provider) => provider.id === currentModel?.provider) ?? displayProviders[0];
+		setSelectedProvider(preferred?.id ?? "");
+	}, [providers, models, currentModel?.provider, selectedProvider]);
+
+	const selected = displayProviders.find((provider) => provider.id === selectedProvider);
+	const selectedModels = models.filter((model) => model.provider === selectedProvider);
+	const deleteSelectedProvider = async () => {
+		if (!selected?.deletable || deleting) return;
+		const confirmed = window.confirm(
+			`确定删除供应商“${selected.id}”吗？\n\n该供应商及其全部模型会从 ordis-ai 中隐藏，同时删除 Pi 中保存的凭据和自定义模型配置。此操作无法撤销。`,
+		);
+		if (!confirmed) return;
+		setDeleting(true);
+		setDeleteError("");
+		try {
+			await onDeleteProvider(selected.id);
+		} catch (e: any) {
+			setDeleteError(String(e?.message ?? e));
+		} finally {
+			setDeleting(false);
+		}
+	};
+
 	return (
-		<div className="fixed inset-0 bg-black/25 backdrop-blur-xs flex items-center justify-center z-50 p-4 select-text">
-			<div className="bg-white rounded-xl max-w-md w-full p-5 space-y-4 border border-black/[0.08] shadow-xl">
-				{/* Modal Header */}
-				<div className="flex items-center justify-between pb-2 border-b border-black/[0.06]">
-					<h3 className="text-sm font-semibold text-neutral-900">设置</h3>
+		<div className="fixed inset-0 bg-black/25 backdrop-blur-[2px] flex items-center justify-center z-50 p-4 select-text">
+			<div className="flex w-[min(1080px,calc(100vw-32px))] h-[min(720px,calc(100vh-32px))] min-h-[520px] overflow-hidden rounded-2xl bg-white border border-black/[0.08] shadow-2xl">
+				<aside className="flex w-56 flex-shrink-0 flex-col bg-[#fafafa] border-r border-black/[0.06] px-3 py-6">
+					<div className="px-3 pb-2 text-[12px] font-semibold tracking-wide text-neutral-400">模型与服务</div>
 					<button
-						onClick={onClose}
-						className="p-1 rounded-md text-neutral-400 hover:text-neutral-800 hover:bg-[#f0f0f0] transition-colors duration-150"
+						type="button"
+						onClick={() => setPage("providers")}
+						className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] text-left transition-colors ${
+							page === "providers"
+								? "bg-[#ededed] text-neutral-900 font-medium"
+								: "text-neutral-600 hover:bg-black/[0.04]"
+						}`}
 					>
-						<X className="w-4 h-4" />
+						<Bot className="w-4 h-4" />
+						<span>模型与供应商</span>
 					</button>
-				</div>
 
-				{/* Modal Body */}
-				<div className="space-y-4 text-xs">
-					{/* Workspace */}
-					<div className="space-y-1.5">
-						<label className="font-medium text-neutral-700">当前工作区</label>
-						<div className="p-2 bg-[#f7f7f8] rounded-md font-mono text-[11.5px] text-neutral-600 break-all flex items-center justify-between gap-2">
-							<span className="truncate">{currentWorkspace || "未设置"}</span>
-							<button
-								onClick={() => {
-									void onOpenWorkspace();
-								}}
-								className="px-2 py-1 bg-white hover:bg-[#f0f0f0] text-neutral-700 rounded border border-black/[0.06] flex-shrink-0 transition-colors duration-150"
-							>
-								更改
-							</button>
+					<div className="px-3 pt-7 pb-2 text-[12px] font-semibold tracking-wide text-neutral-400">外观</div>
+					<button
+						type="button"
+						onClick={() => setPage("theme")}
+						className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] text-left transition-colors ${
+							page === "theme"
+								? "bg-[#ededed] text-neutral-900 font-medium"
+								: "text-neutral-600 hover:bg-black/[0.04]"
+						}`}
+					>
+						<Palette className="w-4 h-4" />
+						<span>主题</span>
+					</button>
+
+					<div className="mt-auto px-3 pt-7 flex items-center gap-2 text-[12px] text-neutral-400">
+						<Info className="w-3.5 h-3.5" />
+						<span>ordis-ai v0.1.0</span>
+					</div>
+				</aside>
+
+				<section className="min-w-0 flex-1 flex flex-col bg-white">
+					<header className="h-[74px] flex-shrink-0 flex items-center justify-between px-8 border-b border-black/[0.08]">
+						<h2 className="text-[20px] font-semibold text-neutral-900">
+							{page === "providers" ? "模型与供应商" : "主题"}
+						</h2>
+						<button
+							type="button"
+							onClick={onClose}
+							className="p-2 rounded-lg text-neutral-500 hover:text-neutral-900 hover:bg-black/[0.05] transition-colors"
+							aria-label="关闭设置"
+						>
+							<X className="w-5 h-5" />
+						</button>
+					</header>
+
+					{page === "providers" ? (
+						<div className="min-h-0 flex-1 flex flex-col px-8 py-6">
+							<div className="mb-5">
+								<h3 className="text-[15px] font-semibold text-neutral-900">Pi 供应商配置</h3>
+								<p className="mt-1 text-[13px] leading-relaxed text-neutral-500">
+									删除供应商后，其模型会同时从设置和聊天模型列表中隐藏。API Key 不会显示在界面中。
+								</p>
+							</div>
+
+							<div className="min-h-0 flex-1 grid grid-cols-[260px_minmax(0,1fr)] border border-black/[0.08] rounded-2xl overflow-hidden bg-white">
+								<div className="min-h-0 border-r border-black/[0.08] p-3 flex flex-col">
+									<div className="px-2 pb-2 flex items-center justify-between">
+										<span className="text-[12px] font-semibold text-neutral-500">供应商</span>
+										<span className="text-[11px] text-neutral-400">{displayProviders.length}</span>
+									</div>
+									<div className="min-h-0 overflow-y-auto space-y-1">
+										{displayProviders.map((provider) => {
+											const count = models.filter((model) => model.provider === provider.id).length;
+											const active = provider.id === selectedProvider;
+											return (
+												<button
+													key={provider.id}
+													type="button"
+													onClick={() => {
+														setSelectedProvider(provider.id);
+														setDeleteError("");
+													}}
+													className={`w-full px-3 py-3 rounded-xl text-left border transition-colors ${
+														active
+													? "border-neutral-400 bg-[#f5f5f5]"
+													: "border-transparent hover:bg-[#f5f5f5]"
+													}`}
+												>
+													<div className="flex items-center gap-2">
+														<span className={`w-2 h-2 rounded-full ${count > 0 ? "bg-emerald-500" : "bg-neutral-300"}`} />
+														<span className="truncate text-[14px] font-medium text-neutral-900">{provider.id}</span>
+													</div>
+													<div className="mt-1 pl-4 text-[12px] text-neutral-400">
+														{count > 0 ? `${count} 个可用模型` : "当前无可用模型"}
+													</div>
+												</button>
+											);
+										})}
+										{displayProviders.length === 0 && (
+											<div className="px-3 py-8 text-center text-[13px] text-neutral-400">暂无供应商配置</div>
+										)}
+									</div>
+								</div>
+
+								<div className="min-w-0 min-h-0 p-6 overflow-y-auto">
+									{selected ? (
+										<div className="space-y-6">
+											<div>
+												<div className="flex items-center gap-2">
+													<h3 className="text-[18px] font-semibold text-neutral-900">{selected.id}</h3>
+													{selected.default && (
+														<span className="px-2 py-0.5 rounded-full bg-neutral-900 text-white text-[10px] font-medium">默认</span>
+													)}
+												</div>
+												<div className="mt-3 flex flex-wrap gap-2">
+													{selected.hasCredential && (
+														<span className="px-2.5 py-1 rounded-lg bg-[#f2f1ee] text-[12px] text-neutral-600">
+															已保存{selected.credentialType === "api_key" ? " API Key" : "凭据"}
+														</span>
+													)}
+													{selected.hasCustomConfig && (
+														<span className="px-2.5 py-1 rounded-lg bg-[#f2f1ee] text-[12px] text-neutral-600">models.json</span>
+													)}
+													{!selected.hasCredential && !selected.hasCustomConfig && (
+														<span className="px-2.5 py-1 rounded-lg bg-[#f2f1ee] text-[12px] text-neutral-600">环境变量或运行时配置</span>
+													)}
+												</div>
+											</div>
+
+											<div>
+												<div className="mb-2 flex items-center justify-between">
+													<h4 className="text-[13px] font-semibold text-neutral-700">可用模型</h4>
+													<span className="text-[12px] text-neutral-400">{selectedModels.length}</span>
+												</div>
+												<div className="max-h-56 overflow-y-auto rounded-xl border border-black/[0.07] divide-y divide-black/[0.06]">
+													{selectedModels.map((model) => {
+														const active = currentModel?.provider === model.provider && currentModel?.id === model.id;
+														return (
+															<button
+																key={`${model.provider}::${model.id}`}
+																type="button"
+																onClick={() => void onSwitchModel(model.provider, model.id)}
+																className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left hover:bg-[#fafafa] transition-colors"
+															>
+																<span className="min-w-0 truncate text-[13px] text-neutral-700">{model.name || model.id}</span>
+																{active && <span className="text-[11px] font-medium text-emerald-600">使用中</span>}
+															</button>
+														);
+													})}
+													{selectedModels.length === 0 && (
+														<div className="px-3 py-6 text-center text-[12px] text-neutral-400">没有可用模型</div>
+													)}
+												</div>
+											</div>
+
+											<div className="pt-5 border-t border-black/[0.08]">
+												<h4 className="text-[13px] font-semibold text-neutral-800">删除供应商</h4>
+												<p className="mt-1 text-[12px] leading-relaxed text-neutral-500">
+											删除后，该供应商及其全部模型不会再出现在 ordis-ai 中。
+												</p>
+												{deleteError && <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-[12px] text-rose-600">{deleteError}</div>}
+												<button
+													type="button"
+													disabled={!selected.deletable || deleting}
+													onClick={() => void deleteSelectedProvider()}
+													className="mt-4 inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-rose-200 text-[13px] font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+												>
+													<Trash2 className="w-4 h-4" />
+													{deleting ? "正在删除…" : "删除供应商"}
+												</button>
+											</div>
+										</div>
+									) : (
+										<div className="h-full flex items-center justify-center text-[13px] text-neutral-400">选择一个供应商查看详情</div>
+									)}
+								</div>
+							</div>
 						</div>
-					</div>
+					) : (
+						<div className="flex-1 overflow-y-auto px-8 py-7">
+							<div className="max-w-3xl">
+								<h3 className="text-[15px] font-semibold text-neutral-900">选择主题</h3>
+								<p className="mt-1 text-[13px] text-neutral-500">当前仅提供 White，后续主题会在这里添加。</p>
 
-					{/* Model Selection */}
-					<div className="space-y-1.5">
-						<label className="font-medium text-neutral-700">默认模型</label>
-						<div className="max-h-36 overflow-y-auto space-y-0.5 p-1 bg-[#f7f7f8] rounded-md">
-							{models.map((m) => (
-								<button
-									key={m.id}
-									onClick={() => void onSwitchModel(m.id)}
-									className={`w-full text-left px-2 py-1 rounded text-xs flex items-center justify-between transition-colors duration-150 ${
-										currentModel?.id === m.id
-											? "bg-white font-medium text-neutral-900 shadow-xs"
-											: "text-neutral-600 hover:bg-white/60"
-									}`}
-								>
-									<span>{m.name}</span>
-									<span className="text-[10px] text-neutral-400 font-mono">{m.provider}</span>
-								</button>
-							))}
+								<div className="mt-6 w-64">
+									<div className="relative overflow-hidden rounded-xl border-2 border-neutral-900 bg-white p-2 shadow-xs">
+										<div className="h-32 overflow-hidden rounded-lg border border-black/[0.08] bg-white">
+											<div className="flex h-full">
+												<div className="w-16 border-r border-black/[0.06] bg-[#fafafa] p-2">
+													<div className="h-1.5 w-8 rounded-full bg-neutral-300" />
+													<div className="mt-3 h-5 rounded bg-[#ececec]" />
+													<div className="mt-2 h-1.5 w-9 rounded-full bg-neutral-200" />
+													<div className="mt-2 h-1.5 w-7 rounded-full bg-neutral-200" />
+												</div>
+												<div className="flex-1 p-3">
+													<div className="h-2 w-20 rounded-full bg-neutral-300" />
+													<div className="mt-5 h-1.5 w-24 rounded-full bg-neutral-200" />
+													<div className="mt-2 h-1.5 w-16 rounded-full bg-neutral-200" />
+													<div className="mt-7 h-7 rounded-lg border border-black/[0.08] bg-white shadow-xs" />
+												</div>
+											</div>
+										</div>
+										<div className="absolute right-4 top-4 flex h-5 w-5 items-center justify-center rounded-full bg-neutral-900 text-white">
+											<Check className="h-3 w-3" />
+										</div>
+									</div>
+									<div className="mt-3 text-[14px] font-semibold text-neutral-900">White</div>
+									<div className="mt-0.5 text-[12px] text-neutral-400">纯白简洁主题 · 当前使用</div>
+								</div>
+							</div>
 						</div>
-					</div>
-
-					{/* Thinking Level */}
-					<div className="space-y-1.5">
-						<label className="font-medium text-neutral-700">思考等级</label>
-						<div className="flex flex-wrap gap-1">
-							{THINKING_LEVELS.map((lvl) => (
-								<button
-									key={lvl}
-									onClick={() => void onChangeThinking(lvl)}
-									className={`px-2 py-1 rounded text-xs transition-colors duration-150 ${
-										currentThinkingLevel === lvl
-											? "bg-neutral-900 text-white font-medium"
-											: "bg-[#f7f7f8] text-neutral-600 hover:bg-[#ebebeb]"
-									}`}
-								>
-									{lvl}
-								</button>
-							))}
-						</div>
-					</div>
-
-					{/* About */}
-					<div className="pt-2 border-t border-black/[0.06] text-neutral-400 text-[11px] flex justify-between">
-						<span>ordis-ai · Pi Coding Agent GUI</span>
-						<span>v0.1.0</span>
-					</div>
-				</div>
+					)}
+				</section>
 			</div>
 		</div>
 	);
@@ -1019,7 +839,7 @@ function ExtensionDialog({
 							<textarea
 								value={text}
 								onChange={(e) => setText(e.target.value)}
-								className="w-full p-2.5 bg-[#f7f7f8] rounded-lg font-mono text-xs text-neutral-800 focus:outline-hidden min-h-[140px]"
+								className="w-full p-2.5 bg-[#f7f7f8] rounded-lg text-xs text-neutral-800 focus:outline-hidden min-h-[140px]"
 							/>
 						) : (
 							<input

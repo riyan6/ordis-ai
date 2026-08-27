@@ -51,7 +51,7 @@ export const Message = memo(function Message({
 
 		case "toolResult":
 			return (
-				<div className="flex items-center gap-1.5 my-1 text-[13px] font-mono text-neutral-500">
+				<div className="flex items-center gap-1.5 my-1 text-[13px] text-neutral-500">
 					<span
 						className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
 							message.isError ? "bg-rose-500" : "bg-neutral-400"
@@ -68,12 +68,12 @@ export const Message = memo(function Message({
 
 		case "bash":
 			return (
-				<div className="my-2 rounded-lg bg-[#f7f7f8] p-3 font-mono text-[13px] text-neutral-800 overflow-x-auto">
+				<div className="my-2 rounded-lg bg-[#f7f7f8] p-3 text-[13px] text-neutral-800 overflow-x-auto">
 					<div className="flex items-center gap-1.5 text-neutral-400 text-xs mb-1.5">
 						<Terminal className="w-3.5 h-3.5 text-neutral-400" />
 						<span>终端输出</span>
 					</div>
-					<pre className="m-0 whitespace-pre-wrap word-break-all text-[13px] leading-relaxed text-neutral-700">
+					<pre className="m-0 whitespace-pre-wrap word-break-all font-mono text-[13px] leading-relaxed text-neutral-700">
 						{blocksToText(message.content)}
 					</pre>
 				</div>
@@ -195,7 +195,7 @@ function ThinkingCapsule({ text, isStreaming }: { text: string; isStreaming: boo
 			</button>
 
 			{open && (
-				<div className="mt-1 p-3 bg-[#f7f7f8] rounded-md text-neutral-600 font-mono text-[13px] leading-relaxed max-h-72 overflow-y-auto whitespace-pre-wrap select-text">
+				<div className="mt-1 p-3 bg-[#f7f7f8] rounded-md text-neutral-600 text-[13px] leading-relaxed max-h-72 overflow-y-auto whitespace-pre-wrap select-text">
 					{text || "思考中..."}
 					{isStreaming && <span className="streaming-caret ml-1 opacity-60" />}
 				</div>

@@ -49,10 +49,10 @@ type SessionInfo struct {
 
 // WorkspaceRecord is a registered (or auto-discovered) workspace root.
 type WorkspaceRecord struct {
-	ID        string `json:"id"`
-	Path      string `json:"path"`
-	Name      string `json:"name"`
-	Pinned    bool   `json:"pinned"`
+	ID           string `json:"id"`
+	Path         string `json:"path"`
+	Name         string `json:"name"`
+	Pinned       bool   `json:"pinned"`
 	LastOpenedAt string `json:"lastOpenedAt,omitempty"`
 }
 
@@ -64,12 +64,13 @@ type WorkspaceListResult struct {
 
 // App is the Wails application root.
 type App struct {
-	ctx     context.Context
-	mu      sync.Mutex
-	manager *pi.Manager
-	ws      string // current workspace dir
-	lastErr string
-	started bool
+	ctx      context.Context
+	mu       sync.Mutex
+	switchMu sync.Mutex
+	manager  *pi.Manager
+	ws       string // current workspace dir
+	lastErr  string
+	started  bool
 }
 
 // NewApp creates the application.
@@ -110,7 +111,9 @@ func (a *App) onPiExit(code int, signal string) {
 	if a.ctx == nil {
 		return
 	}
+	a.mu.Lock()
 	a.lastErr = fmt.Sprintf("pi exited (code=%d signal=%s)", code, signal)
+	a.mu.Unlock()
 	payload := map[string]any{"code": code, "signal": signal}
 	wailsruntime.EventsEmit(a.ctx, "pi:exit", payload)
 }
@@ -171,28 +174,56 @@ func (a *App) StopPi() {
 
 // GetSnapshot returns the current state for initial UI render.
 func (a *App) GetSnapshot() Snapshot {
+	return a.getSnapshot(true)
+}
+
+// getSnapshot can skip the model list on latency-sensitive switch paths.
+// State and messages are independent RPC calls, so fetch them concurrently.
+func (a *App) getSnapshot(includeModels bool) Snapshot {
+	a.mu.Lock()
+	manager := a.manager
 	snap := Snapshot{
-		Running:   a.manager != nil && a.manager.IsRunning(),
+		Running:   manager != nil && manager.IsRunning(),
 		Workspace: a.ws,
 		LastError: a.lastErr,
 	}
+	a.mu.Unlock()
 	if snap.Running {
-		// Note: resp.Data is the `data` field payload, not the full
-		// response envelope — decode it directly.
-		if resp, err := a.manager.Request(pi.Command{Type: "get_state"}, 8*time.Second); err == nil && resp != nil {
-			var st any
-			_ = json.Unmarshal(resp.Data, &st)
-			snap.State = st
-		}
-		if resp, err := a.manager.Request(pi.Command{Type: "get_messages"}, 8*time.Second); err == nil && resp != nil {
-			var msgs struct {
-				Messages any `json:"messages"`
+		var state, messages, models any
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			// Note: resp.Data is the `data` field payload, not the full
+			// response envelope — decode it directly.
+			if resp, err := manager.Request(pi.Command{Type: "get_state"}, 8*time.Second); err == nil && resp != nil && resp.Success {
+				var st any
+				_ = json.Unmarshal(resp.Data, &st)
+				state = st
 			}
-			if json.Unmarshal(resp.Data, &msgs) == nil {
-				snap.Messages = msgs.Messages
+		}()
+		go func() {
+			defer wg.Done()
+			if resp, err := manager.Request(pi.Command{Type: "get_messages"}, 8*time.Second); err == nil && resp != nil && resp.Success {
+				var msgs struct {
+					Messages any `json:"messages"`
+				}
+				if json.Unmarshal(resp.Data, &msgs) == nil {
+					messages = msgs.Messages
+				}
 			}
+		}()
+		if includeModels {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				models = a.fetchModelsFast()
+			}()
 		}
-		snap.Models = a.fetchModelsFast()
+		wg.Wait()
+		snap.State = state
+		snap.Messages = messages
+		snap.Models = models
 	}
 	return snap
 }
@@ -285,8 +316,8 @@ func (a *App) ListWorkspaces() (WorkspaceListResult, error) {
 			continue
 		}
 		byPath[key] = &WorkspaceRecord{
-			Path:  s.Workspace,
-			Name:  filepath.Base(s.Workspace),
+			Path:   s.Workspace,
+			Name:   filepath.Base(s.Workspace),
 			Pinned: false,
 		}
 	}
@@ -310,7 +341,9 @@ func (a *App) ListWorkspaces() (WorkspaceListResult, error) {
 		return out[i].Name < out[j].Name
 	})
 
+	a.mu.Lock()
 	cur := a.ws
+	a.mu.Unlock()
 	return WorkspaceListResult{Workspaces: out, Current: cur}, nil
 }
 
@@ -376,14 +409,21 @@ func (a *App) AddWorkspaceDialog() (WorkspaceListResult, error) {
 // SwitchWorkspace restarts the pi process in the given workspace (so
 // new conversations live there) and returns the fresh snapshot.
 func (a *App) SwitchWorkspace(path string) (Snapshot, error) {
+	a.switchMu.Lock()
+	defer a.switchMu.Unlock()
 	if _, err := os.Stat(path); err != nil {
 		return Snapshot{}, fmt.Errorf("workspace does not exist: %s", path)
+	}
+	a.mu.Lock()
+	current := a.ws
+	a.mu.Unlock()
+	if samePath(current, path) && a.manager != nil && a.manager.IsRunning() {
+		return a.getSnapshot(false), nil
 	}
 	if err := a.restartPiIn(path); err != nil {
 		return Snapshot{}, err
 	}
-	time.Sleep(600 * time.Millisecond)
-	return a.GetSnapshot(), nil
+	return a.getSnapshot(false), nil
 }
 
 // samePath compares two paths case-insensitively on Windows with
@@ -474,11 +514,11 @@ func (a *App) ListSessions() ([]SessionInfo, error) {
 		}
 		meta := readSessionMeta(path)
 		out = append(out, SessionInfo{
-			ID:        meta.ID,
-			Name:      meta.Name,
-			Path:      path,
-			Workspace: meta.Cwd,
-			UpdatedAt: info.ModTime().UnixMilli(),
+			ID:           meta.ID,
+			Name:         meta.Name,
+			Path:         path,
+			Workspace:    meta.Cwd,
+			UpdatedAt:    info.ModTime().UnixMilli(),
 			MessageCount: meta.MessageCount,
 		})
 		return nil
@@ -496,22 +536,15 @@ func (a *App) ListSessions() ([]SessionInfo, error) {
 // ResumeSession switches the running pi session to the given session
 // file and returns the refreshed snapshot (messages of that session).
 //
-// If the session belongs to a different workspace than the pi process
-// currently runs in, the pi process is first restarted in that
-// workspace (session files are grouped by the cwd of the process that
-// created them; a new conversation "hangs" under the current cwd, so
-// resuming a session must also move the process to its workspace).
+// Pi reconstructs its cwd-bound runtime when switch_session loads a target
+// from another workspace, so the existing subprocess can be reused.
 func (a *App) ResumeSession(sessionPath string) (Snapshot, error) {
+	a.switchMu.Lock()
+	defer a.switchMu.Unlock()
 	if !fileExists(sessionPath) {
 		return Snapshot{}, fmt.Errorf("session file not found: %s", sessionPath)
 	}
 	meta := readSessionMeta(sessionPath)
-	if meta.Cwd != "" && a.ws != meta.Cwd {
-		// Move the pi process to the session's workspace first.
-		if err := a.restartPiIn(meta.Cwd); err != nil {
-			return Snapshot{}, fmt.Errorf("switch workspace: %w", err)
-		}
-	}
 	if a.manager == nil || !a.manager.IsRunning() {
 		return Snapshot{}, fmt.Errorf("pi is not running — start it first")
 	}
@@ -528,25 +561,111 @@ func (a *App) ResumeSession(sessionPath string) (Snapshot, error) {
 		}
 		return Snapshot{}, fmt.Errorf("%s", msg)
 	}
-	// Let the session settle, then return the fresh snapshot.
-	time.Sleep(400 * time.Millisecond)
-	return a.GetSnapshot(), nil
+	var result struct {
+		Cancelled bool `json:"cancelled"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return Snapshot{}, fmt.Errorf("decode switch_session response: %w", err)
+	}
+	if result.Cancelled {
+		return Snapshot{}, fmt.Errorf("session switch was cancelled")
+	}
+	// Pi rebuilds cwd-bound services from the target session header, so a
+	// cross-workspace resume does not require restarting the Node process.
+	if meta.Cwd != "" {
+		a.mu.Lock()
+		a.ws = meta.Cwd
+		a.mu.Unlock()
+	}
+	return a.getSnapshot(false), nil
 }
 
-// restartPiIn kills the pi subprocess (if any) and starts a fresh one
-// in the given workspace. Used when switching workspaces or resuming a
-// session whose cwd differs from the current one.
+// DeleteSession removes a persisted Pi session. If it is currently active,
+// switch to a fresh session first so Pi no longer owns the file being removed.
+func (a *App) DeleteSession(sessionPath string) error {
+	a.switchMu.Lock()
+	defer a.switchMu.Unlock()
+
+	target, err := deletableSessionPath(sessionPath)
+	if err != nil {
+		return err
+	}
+	if a.manager != nil && a.manager.IsRunning() {
+		resp, err := a.manager.Request(pi.Command{Type: "get_state"}, 5*time.Second)
+		if err != nil {
+			return fmt.Errorf("get active session: %w", err)
+		}
+		if resp == nil || !resp.Success {
+			return fmt.Errorf("get active session failed")
+		}
+		var state struct {
+			SessionFile string `json:"sessionFile"`
+		}
+		if err := json.Unmarshal(resp.Data, &state); err != nil {
+			return fmt.Errorf("decode active session: %w", err)
+		}
+		if state.SessionFile != "" && samePath(state.SessionFile, target) {
+			resp, err := a.manager.Request(pi.Command{Type: "new_session"}, 15*time.Second)
+			if err != nil {
+				return fmt.Errorf("leave active session: %w", err)
+			}
+			if resp == nil || !resp.Success {
+				return fmt.Errorf("leave active session failed")
+			}
+			var result struct {
+				Cancelled bool `json:"cancelled"`
+			}
+			if err := json.Unmarshal(resp.Data, &result); err != nil {
+				return fmt.Errorf("decode new_session response: %w", err)
+			}
+			if result.Cancelled {
+				return fmt.Errorf("session deletion was cancelled")
+			}
+		}
+	}
+	if err := os.Remove(target); err != nil {
+		return fmt.Errorf("delete session: %w", err)
+	}
+	return nil
+}
+
+// deletableSessionPath accepts only real .jsonl files below Pi's sessions
+// directory. Resolving symlinks prevents a linked file from escaping it.
+func deletableSessionPath(sessionPath string) (string, error) {
+	if strings.TrimSpace(sessionPath) == "" {
+		return "", fmt.Errorf("session path is empty")
+	}
+	target, err := filepath.Abs(sessionPath)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(filepath.Ext(target), ".jsonl") {
+		return "", fmt.Errorf("session must be a .jsonl file")
+	}
+	if !fileExists(target) {
+		return "", fmt.Errorf("session file not found: %s", target)
+	}
+	target, err = filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", fmt.Errorf("resolve session path: %w", err)
+	}
+	root, err := filepath.EvalSymlinks(filepath.Join(piAgentDir(), "sessions"))
+	if err != nil {
+		return "", fmt.Errorf("resolve sessions directory: %w", err)
+	}
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("session is outside the Pi sessions directory")
+	}
+	return target, nil
+}
+
+// restartPiIn kills the pi subprocess (if any) and starts a fresh one in the
+// given workspace. This is only needed when creating a fresh workspace session.
 func (a *App) restartPiIn(workspace string) error {
 	if a.manager != nil {
-		a.manager.Abort()
-		// Abort is async: wait until the process actually exits before
-		// spawning a new one (startPiLocked refuses if still running).
-		deadline := time.Now().Add(5 * time.Second)
-		for a.manager.IsRunning() && time.Now().Before(deadline) {
-			time.Sleep(100 * time.Millisecond)
-		}
-		if a.manager.IsRunning() {
-			return fmt.Errorf("pi process did not stop in time")
+		if err := a.manager.StopAndWait(5 * time.Second); err != nil {
+			return err
 		}
 	}
 	if _, err := os.Stat(workspace); err != nil {
@@ -602,11 +721,11 @@ func readSessionMeta(path string) sessionMeta {
 		if isFirst {
 			isFirst = false
 			var hdr struct {
-				Type      string `json:"type"`
-				ID        string `json:"id"`
-				Cwd       string `json:"cwd"`
+				Type        string `json:"type"`
+				ID          string `json:"id"`
+				Cwd         string `json:"cwd"`
 				SessionName string `json:"sessionName"`
-				Name      string `json:"name"`
+				Name        string `json:"name"`
 			}
 			if json.Unmarshal(line, &hdr) == nil {
 				meta.ID = hdr.ID
@@ -692,11 +811,9 @@ func (a *App) OpenWorkspace() (WorkspaceInfo, error) {
 	if dir == "" {
 		return a.GetWorkspace(), nil // user cancelled
 	}
-	if a.manager != nil {
-		a.manager.Abort()
-		time.Sleep(300 * time.Millisecond)
-	}
-	if err := a.startPiLocked(dir); err != nil {
+	a.switchMu.Lock()
+	defer a.switchMu.Unlock()
+	if err := a.restartPiIn(dir); err != nil {
 		return WorkspaceInfo{}, err
 	}
 	return a.GetWorkspace(), nil

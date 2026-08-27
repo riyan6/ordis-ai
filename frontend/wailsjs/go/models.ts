@@ -1,5 +1,29 @@
 export namespace main {
 	
+	export class ProviderInfo {
+	    id: string;
+	    hasCredential: boolean;
+	    credentialType?: string;
+	    hasCustomConfig: boolean;
+	    default: boolean;
+	    deletable: boolean;
+	    disabled: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProviderInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.hasCredential = source["hasCredential"];
+	        this.credentialType = source["credentialType"];
+	        this.hasCustomConfig = source["hasCustomConfig"];
+	        this.default = source["default"];
+	        this.deletable = source["deletable"];
+	        this.disabled = source["disabled"];
+	    }
+	}
 	export class SessionInfo {
 	    id: string;
 	    name: string;

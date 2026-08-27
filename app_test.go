@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,38 @@ func TestStartPiGetState(t *testing.T) {
 			break
 		}
 		time.Sleep(1 * time.Second)
+	}
+}
+
+func TestDeleteSessionOnlyAllowsPiSessionFiles(t *testing.T) {
+	agentDir := t.TempDir()
+	t.Setenv("PI_AGENT_DIR", agentDir)
+	sessionsDir := filepath.Join(agentDir, "sessions", "project")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(sessionsDir, "session.jsonl")
+	if err := os.WriteFile(target, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	if err := app.DeleteSession(target); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("session still exists: %v", err)
+	}
+
+	outside := filepath.Join(t.TempDir(), "outside.jsonl")
+	if err := os.WriteFile(outside, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DeleteSession(outside); err == nil {
+		t.Fatal("expected an error for a session outside the Pi sessions directory")
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("outside file was modified: %v", err)
 	}
 }
 

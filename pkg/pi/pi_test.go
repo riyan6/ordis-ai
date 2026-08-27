@@ -7,6 +7,45 @@ import (
 	"time"
 )
 
+type checkingWriteCloser struct {
+	write func([]byte) (int, error)
+}
+
+func (w checkingWriteCloser) Write(p []byte) (int, error) { return w.write(p) }
+func (checkingWriteCloser) Close() error                  { return nil }
+
+func TestRequestRegistersPendingBeforeWrite(t *testing.T) {
+	m := NewManager(func(json.RawMessage, *Event) {}, nil, func(string) {})
+	m.stdin = checkingWriteCloser{write: func(line []byte) (int, error) {
+		var command Command
+		if err := json.Unmarshal(line, &command); err != nil {
+			t.Fatalf("decode command: %v", err)
+		}
+		if _, ok := m.pending[command.ID]; !ok {
+			t.Fatal("request was written before its pending waiter was registered")
+		}
+		response, err := json.Marshal(Response{
+			ID:      command.ID,
+			Type:    "response",
+			Command: command.Type,
+			Success: true,
+		})
+		if err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+		go m.handleLine(response)
+		return len(line), nil
+	}}
+
+	resp, err := m.Request(Command{Type: "get_state"}, time.Second)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if resp == nil || !resp.Success {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
 // TestPiSpawnAndState verifies we can spawn pi --mode rpc and talk to it.
 func TestPiSpawnAndState(t *testing.T) {
 	piBin := os.Getenv("ORDIS_PI_BIN")

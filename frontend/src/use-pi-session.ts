@@ -8,7 +8,7 @@
  *    deltas, tool cards, thinking blocks)
  *  - exposes imperative commands (prompt, abort, model switch, ...)
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EventsOn, EventsOff } from "../wailsjs/runtime/runtime";
 import {
 	StartPi,
@@ -22,6 +22,9 @@ import {
 	GetWorkspace,
 	ListSessions,
 	ResumeSession,
+	DeleteSession,
+	ListProviders,
+	DeleteProvider,
 	ListWorkspaces,
 	AddWorkspaceDialog,
 	SwitchWorkspace,
@@ -83,6 +86,16 @@ export interface WorkspaceRecord {
 	lastOpenedAt?: string;
 }
 
+export interface ProviderInfo {
+	id: string;
+	hasCredential: boolean;
+	credentialType?: string;
+	hasCustomConfig: boolean;
+	default: boolean;
+	deletable: boolean;
+	disabled: boolean;
+}
+
 let seq = 0;
 function nextId(): string {
 	return `m${++seq}-${Date.now().toString(36)}`;
@@ -116,6 +129,15 @@ export function usePiSession() {
 	const [agentBusy, setAgentBusy] = useState(false);
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
 	const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
+	const [providers, setProviders] = useState<ProviderInfo[]>([]);
+	const disabledProviderIDs = useMemo(
+		() => new Set(providers.filter((provider) => provider.disabled).map((provider) => provider.id)),
+		[providers],
+	);
+	const visibleModels = useMemo(
+		() => models.filter((model) => !disabledProviderIDs.has(model.provider)),
+		[models, disabledProviderIDs],
+	);
 	const [currentWorkspace, setCurrentWorkspace] = useState("");
 	// True while a workspace switch / session resume is in flight:
 	// the chat area shows a centered spinner (message list cleared).
@@ -335,17 +357,26 @@ export function usePiSession() {
 		}
 	}, []);
 
+	const loadProviders = useCallback(async () => {
+		try {
+			const list = await ListProviders();
+			setProviders(Array.isArray(list) ? list : []);
+		} catch (e: any) {
+			setLastError(String(e?.message ?? e));
+			throw e;
+		}
+	}, []);
+
 	const resume = useCallback(
 		async (session: SessionInfo) => {
-			// Loading UX: clear the message list and show a centered
-			// spinner while the backend switches processes/sessions.
+			// Keep the previous conversation visible behind the switching
+			// overlay so a slow or cancelled switch never leaves a blank view.
 			setSwitching(true);
 			switchingRef.current = true;
-			setMessages([]);
-			setTools([]);
 			streamRef.current = null;
 			try {
 				const snap = await ResumeSession(session.path);
+				setTools([]);
 				if (Array.isArray(snap.messages)) {
 					setMessages(snap.messages.map((m: PiMessage) => fromPiMessage(m)));
 				} else {
@@ -372,11 +403,10 @@ export function usePiSession() {
 			if (path === currentWorkspace) return;
 			setSwitching(true);
 			switchingRef.current = true;
-			setMessages([]);
-			setTools([]);
 			streamRef.current = null;
 			try {
 				const snap = await SwitchWorkspace(path);
+				setTools([]);
 				if (Array.isArray(snap.messages)) {
 					setMessages(snap.messages.map((m: PiMessage) => fromPiMessage(m)));
 				} else {
@@ -603,6 +633,8 @@ export function usePiSession() {
 		void loadSessions();
 		// Initial workspace list.
 		void loadWorkspaces();
+		// Load the GUI provider denylist before runtime models are shown.
+		void loadProviders();
 		// Auto-start the Pi agent on launch (no manual click). Show a
 		// loading state while the subprocess spins up.
 		let cancelled = false;
@@ -691,6 +723,50 @@ export function usePiSession() {
 		}
 	}, [setBusy]);
 
+	const deleteSession = useCallback(
+		async (session: SessionInfo) => {
+			if (!window.confirm(`确定删除会话“${session.name || "未命名会话"}”吗？此操作无法撤销。`)) {
+				return;
+			}
+			try {
+				await DeleteSession(session.path);
+				setLastError("");
+				await Promise.all([loadSessions(), loadWorkspaces(), refresh()]);
+			} catch (e: any) {
+				setLastError(String(e?.message ?? e));
+			}
+		},
+		[loadSessions, loadWorkspaces, refresh],
+	);
+
+	const deleteProvider = useCallback(
+		async (providerID: string) => {
+			setSwitching(true);
+			switchingRef.current = true;
+			try {
+				const list = await DeleteProvider(providerID);
+				const nextProviders = Array.isArray(list) ? list : [];
+				setProviders(nextProviders);
+				if (state?.model?.provider === providerID) {
+					const disabled = new Set(
+						nextProviders.filter((provider) => provider.disabled).map((provider) => provider.id),
+					);
+					const fallback = models.find((model) => !disabled.has(model.provider));
+					if (fallback) await SetModel(fallback.provider, fallback.id);
+				}
+				setLastError("");
+				await refresh();
+			} catch (e: any) {
+				setLastError(String(e?.message ?? e));
+				throw e;
+			} finally {
+				switchingRef.current = false;
+				setSwitching(false);
+			}
+		},
+		[models, refresh, state?.model?.provider],
+	);
+
 	const send = useCallback(
 		async (text: string) => {
 			if (!text.trim()) return;
@@ -721,8 +797,10 @@ export function usePiSession() {
 	}, []);
 
 	const switchModel = useCallback(
-		async (modelId: string) => {
-			const model = models.find((m) => m.id === modelId);
+		async (provider: string, modelId: string) => {
+			const model =
+				models.find((m) => m.provider === provider && m.id === modelId) ??
+				models.find((m) => m.id === modelId);
 			if (!model) return;
 			try {
 				await SetModel(model.provider, model.id);
@@ -766,7 +844,7 @@ export function usePiSession() {
 		messages,
 		tools,
 		state,
-		models,
+		models: visibleModels,
 		workspace,
 		workspacePath,
 		lastError,
@@ -774,6 +852,7 @@ export function usePiSession() {
 		agentBusy,
 		sessions,
 		workspaces,
+		providers,
 		currentWorkspace,
 		switching,
 		start,
@@ -784,7 +863,10 @@ export function usePiSession() {
 		newSession,
 		loadSessions,
 		loadWorkspaces,
+		loadProviders,
 		resume,
+		deleteSession,
+		deleteProvider,
 		switchWorkspace,
 		addWorkspace,
 		switchModel,

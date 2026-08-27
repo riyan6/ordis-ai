@@ -64,7 +64,7 @@ type Event struct {
 
 // Session meta information kept per spawned process.
 type Session struct {
-	PID      int    `json:"pid"`
+	PID       int    `json:"pid"`
 	SessionID string `json:"sessionId,omitempty"`
 }
 
@@ -75,6 +75,7 @@ type Manager struct {
 	cmd      *exec.Cmd
 	stdin    io.WriteCloser
 	stdout   io.ReadCloser
+	done     chan struct{}
 	exiting  atomic.Bool
 	nextID   atomic.Int64
 	closed   bool
@@ -96,9 +97,9 @@ type pendingReq struct {
 // channels and are also passed to onEvent as type "response").
 func NewManager(onEvent func(raw json.RawMessage, ev *Event), onExit func(code int, signal string), onStderr func(line string)) *Manager {
 	return &Manager{
-		pending: make(map[string]*pendingReq),
-		onEvent: onEvent,
-		onExit:  onExit,
+		pending:  make(map[string]*pendingReq),
+		onEvent:  onEvent,
+		onExit:   onExit,
 		onStderr: onStderr,
 	}
 }
@@ -170,7 +171,9 @@ func (m *Manager) StartIn(dir string, args []string, env []string) (*Session, er
 
 	go m.readLoop(stdout)
 	go m.stderrLoop(stderr)
-	go m.waitLoop(cmd)
+	done := make(chan struct{})
+	m.done = done
+	go m.waitLoop(cmd, done)
 
 	return &Session{PID: cmd.Process.Pid}, nil
 }
@@ -205,23 +208,67 @@ func (m *Manager) Send(cmd Command) (string, error) {
 
 // Request sends a command and waits for its response up to the timeout.
 func (m *Manager) Request(cmd Command, timeout time.Duration) (*Response, error) {
-	id, err := m.Send(cmd)
+	m.mu.Lock()
+	if m.closed || m.stdin == nil || m.exiting.Load() {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("pi is not running")
+	}
+	if cmd.ID == "" {
+		cmd.ID = fmt.Sprintf("req-%d", m.nextID.Add(1))
+	}
+	line, err := json.Marshal(cmd)
 	if err != nil {
-		return nil, err
+		m.mu.Unlock()
+		return nil, fmt.Errorf("marshal command: %w", err)
 	}
 	ch := make(chan *Response, 1)
-	m.mu.Lock()
+	id := cmd.ID
 	m.pending[id] = &pendingReq{ch: ch, command: cmd.Type, created: time.Now()}
+	// Register the waiter before writing. Pi can answer simple commands so
+	// quickly that writing first would let readLoop observe an unknown id.
+	if _, err := m.stdin.Write(append(line, '\n')); err != nil {
+		delete(m.pending, id)
+		m.mu.Unlock()
+		return nil, fmt.Errorf("write stdin: %w", err)
+	}
 	m.mu.Unlock()
 
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		m.mu.Lock()
 		delete(m.pending, id)
 		m.mu.Unlock()
 		return nil, fmt.Errorf("timeout waiting for %s response", cmd.Type)
+	}
+}
+
+// StopAndWait kills the active subprocess and waits until waitLoop has
+// finished clearing its handles. Callers can then safely restart the manager.
+func (m *Manager) StopAndWait(timeout time.Duration) error {
+	m.mu.Lock()
+	if m.cmd == nil || m.cmd.Process == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	done := m.done
+	m.exiting.Store(true)
+	_ = m.cmd.Process.Kill()
+	m.mu.Unlock()
+
+	if done == nil {
+		return fmt.Errorf("pi exit waiter is unavailable")
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("pi process did not stop in time")
 	}
 }
 
@@ -291,7 +338,8 @@ func (m *Manager) stderrLoop(r io.Reader) {
 	}
 }
 
-func (m *Manager) waitLoop(cmd *exec.Cmd) {
+func (m *Manager) waitLoop(cmd *exec.Cmd, done chan struct{}) {
+	defer close(done)
 	err := cmd.Wait()
 	m.exiting.Store(true)
 	code := 0

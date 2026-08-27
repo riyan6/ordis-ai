@@ -14,12 +14,24 @@ export function AddWorkspaceDialog() {
   return window['go']['main']['App']['AddWorkspaceDialog']();
 }
 
+export function DeleteProvider(arg1) {
+  return window['go']['main']['App']['DeleteProvider'](arg1);
+}
+
+export function DeleteSession(arg1) {
+  return window['go']['main']['App']['DeleteSession'](arg1);
+}
+
 export function GetSnapshot() {
   return window['go']['main']['App']['GetSnapshot']();
 }
 
 export function GetWorkspace() {
   return window['go']['main']['App']['GetWorkspace']();
+}
+
+export function ListProviders() {
+  return window['go']['main']['App']['ListProviders']();
 }
 
 export function ListSessions() {
