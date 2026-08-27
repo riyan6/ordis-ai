@@ -614,10 +614,25 @@ export function usePiSession() {
 				await StartPi();
 				if (cancelled) return;
 				setRunning(true);
-				// Let the agent settle, then pull messages/models.
-				await new Promise((r) => setTimeout(r, 1200));
-				if (cancelled) return;
-				refresh();
+				// Pull snapshot with retry polling for async model registry
+				for (let i = 0; i < 3; i++) {
+					await new Promise((r) => setTimeout(r, i === 0 ? 800 : 1500));
+					if (cancelled) return;
+					const snap = await GetSnapshot();
+					if (snap.running) {
+						if (Array.isArray(snap.messages)) {
+							setMessages(snap.messages.map((m: PiMessage) => fromPiMessage(m)));
+						}
+						if (Array.isArray(snap.models) && snap.models.length > 0) {
+							setModels(snap.models);
+						}
+						if (snap.state) setState(snap.state);
+						if (snap.state?.isStreaming) setBusy(true);
+						if (Array.isArray(snap.models) && snap.models.length > 0) {
+							break;
+						}
+					}
+				}
 			} catch (e: any) {
 				if (!cancelled) setLastError(String(e?.message ?? e));
 			} finally {
@@ -679,6 +694,7 @@ export function usePiSession() {
 	const send = useCallback(
 		async (text: string) => {
 			if (!text.trim()) return;
+			setBusy(true);
 			setMessages((prev) => [
 				...prev,
 				{ id: nextId(), role: "user", content: [{ type: "text", text }] },
@@ -687,9 +703,10 @@ export function usePiSession() {
 				await SendPrompt(text);
 			} catch (e: any) {
 				setLastError(String(e?.message ?? e));
+				setBusy(false);
 			}
 		},
-		[],
+		[setBusy],
 	);
 
 	const abort = useCallback(async () => {

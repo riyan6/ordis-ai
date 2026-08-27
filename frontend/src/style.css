@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+    'Noto Color Emoji';
+}
+
 @layer base {
   *, *::before, *::after {
     box-sizing: border-box;
@@ -11,22 +17,45 @@
     height: 100%;
     margin: 0;
     padding: 0;
+    font-family: var(--font-sans);
+  }
+
+  body,
+  button,
+  input,
+  textarea,
+  select,
+  pre {
+    font-family: inherit;
   }
 
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    background-color: #f8fafc;
-    color: #0f172a;
+    background-color: #ffffff;
+    color: #1a1a1a;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overflow: hidden;
   }
 }
 
-/* Custom Scrollbar */
+/* Wails window drag utilities */
+.wails-drag {
+  --wails-draggable: drag;
+}
+
+.wails-no-drag,
+button,
+input,
+textarea,
+select,
+a {
+  --wails-draggable: none;
+}
+
+/* Minimalist Custom Scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
@@ -34,19 +63,19 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.35);
-  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.55);
+  background: rgba(0, 0, 0, 0.25);
 }
 
-/* Markdown typography */
+/* Markdown typography — clean, readable, slightly larger */
 .prose-custom {
-  font-size: 14px;
-  line-height: 1.65;
-  color: #334155;
+  font-size: 15px;
+  line-height: 1.68;
+  color: #1a1a1a;
 }
 
 .prose-custom > *:first-child {
@@ -58,19 +87,19 @@
 }
 
 .prose-custom p {
-  margin-top: 0.6em;
-  margin-bottom: 0.6em;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
 }
 
 .prose-custom h1,
 .prose-custom h2,
 .prose-custom h3,
 .prose-custom h4 {
-  color: #0f172a;
+  color: #111827;
   font-weight: 600;
   line-height: 1.35;
   margin-top: 1.2em;
-  margin-bottom: 0.5em;
+  margin-bottom: 0.4em;
 }
 
 .prose-custom h1 {
@@ -78,7 +107,7 @@
 }
 
 .prose-custom h2 {
-  font-size: 1.18rem;
+  font-size: 1.2rem;
 }
 
 .prose-custom h3 {
@@ -87,9 +116,9 @@
 
 .prose-custom ul,
 .prose-custom ol {
-  padding-left: 1.4em;
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
+  padding-left: 1.3em;
+  margin-top: 0.4em;
+  margin-bottom: 0.4em;
 }
 
 .prose-custom ul {
@@ -101,35 +130,33 @@
 }
 
 .prose-custom li {
-  margin-top: 0.25em;
-  margin-bottom: 0.25em;
+  margin-top: 0.2em;
+  margin-bottom: 0.2em;
 }
 
 .prose-custom blockquote {
-  border-left: 3px solid #cbd5e1;
-  padding-left: 0.85em;
+  border-left: 2px solid #e5e5e5;
+  padding-left: 0.75em;
   margin-left: 0;
   margin-right: 0;
-  margin-top: 0.75em;
-  margin-bottom: 0.75em;
-  color: #64748b;
-  font-style: italic;
+  margin-top: 0.6em;
+  margin-bottom: 0.6em;
+  color: #737373;
 }
 
 .prose-custom hr {
   border: none;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
   margin: 1.2em 0;
 }
 
 .prose-custom code:not(pre code) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 0.875em;
-  background-color: #f1f5f9;
-  color: #0f172a;
-  padding: 0.15em 0.35em;
+  font-size: 0.88em;
+  background-color: #f4f4f5;
+  color: #18181b;
+  padding: 0.12em 0.35em;
   border-radius: 4px;
-  border: 1px solid #e2e8f0;
 }
 
 .prose-custom table {
@@ -137,45 +164,45 @@
   border-collapse: collapse;
   margin-top: 0.8em;
   margin-bottom: 0.8em;
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .prose-custom th,
 .prose-custom td {
-  border: 1px solid #e2e8f0;
-  padding: 6px 12px;
+  border: 1px solid #e5e5e5;
+  padding: 7px 12px;
   text-align: left;
 }
 
 .prose-custom th {
-  background-color: #f8fafc;
+  background-color: #fafafa;
   font-weight: 600;
-  color: #1e293b;
+  color: #171717;
 }
 
 .prose-custom tr:nth-child(even) {
-  background-color: rgba(248, 250, 252, 0.6);
+  background-color: #fbfbfb;
 }
 
 .prose-custom a {
-  color: #2563eb;
+  color: #171717;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 .prose-custom a:hover {
-  color: #1d4ed8;
+  color: #525252;
 }
 
 /* Caret for streaming */
 .streaming-caret {
   display: inline-block;
-  width: 6px;
-  height: 14px;
-  background-color: #3b82f6;
+  width: 5px;
+  height: 15px;
+  background-color: #171717;
   margin-left: 2px;
   vertical-align: -1px;
-  animation: pulseCaret 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  animation: pulseCaret 0.9s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   border-radius: 1px;
 }
 
@@ -186,9 +213,9 @@
 
 /* Typing bounce indicators */
 .typing-dot {
-  width: 5px;
-  height: 5px;
-  background-color: #94a3b8;
+  width: 4px;
+  height: 4px;
+  background-color: #a3a3a3;
   border-radius: 9999px;
   animation: typingBounce 1.4s infinite ease-in-out both;
 }
@@ -198,7 +225,6 @@
 .typing-dot:nth-child(3) { animation-delay: 0s; }
 
 @keyframes typingBounce {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; }
   40% { transform: scale(1); opacity: 1; }
 }
-

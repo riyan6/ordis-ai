@@ -11,11 +11,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -147,15 +145,8 @@ func (m *Manager) StartIn(dir string, args []string, env []string) (*Session, er
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	// Hide the child console window. Without this flag, spawning a
-	// console subsystem process (node/cli.js) from this GUI app opens a
-	// visible terminal popup next to the window.
-	if runtime.GOOS == "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: 0x08000000, // CREATE_NO_WINDOW
-		}
-	}
+	// Hide the child console window on Windows.
+	setSysProcAttr(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("stdin pipe: %w", err)
@@ -419,7 +410,8 @@ func parseCmdShim(content, shimPath string) (nodeExe, script string, ok bool) {
 		return "", "", false
 	}
 	dir := filepath.Dir(shimPath)
-	script = filepath.Join(dir, "node_modules", m[1], "dist", "bundle", m[2])
+	pkgPath := filepath.FromSlash(strings.ReplaceAll(m[1], "\\", "/"))
+	script = filepath.Join(dir, "node_modules", pkgPath, "dist", "bundle", m[2])
 	// node executable: prefer the shim dir's node.exe, else PATH node.
 	nodeCandidates := []string{filepath.Join(dir, "node.exe")}
 	if p, err := exec.LookPath("node.exe"); err == nil {
