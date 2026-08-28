@@ -22,6 +22,14 @@ export function DeleteSession(arg1) {
   return window['go']['main']['App']['DeleteSession'](arg1);
 }
 
+export function GetAvailableCores() {
+  return window['go']['main']['App']['GetAvailableCores']();
+}
+
+export function GetCoreType() {
+  return window['go']['main']['App']['GetCoreType']();
+}
+
 export function GetSnapshot() {
   return window['go']['main']['App']['GetSnapshot']();
 }
@@ -76,6 +84,10 @@ export function StartPi() {
 
 export function StopPi() {
   return window['go']['main']['App']['StopPi']();
+}
+
+export function SwitchCore(arg1) {
+  return window['go']['main']['App']['SwitchCore'](arg1);
 }
 
 export function SwitchWorkspace(arg1) {

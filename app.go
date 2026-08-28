@@ -25,10 +25,21 @@ import (
 type Snapshot struct {
 	Running   bool   `json:"running"`
 	Workspace string `json:"workspace"`
+	CoreType  string `json:"coreType"`
 	State     any    `json:"state,omitempty"`
 	Messages  any    `json:"messages,omitempty"`
 	Models    any    `json:"models,omitempty"`
 	LastError string `json:"lastError,omitempty"`
+}
+
+// CoreInfo describes a supported agent core and its availability.
+type CoreInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Available   bool   `json:"available"`
+	Path        string `json:"path"`
+	AgentDir    string `json:"agentDir"`
 }
 
 // WorkspaceInfo describes the currently opened project directory.
@@ -69,6 +80,7 @@ type App struct {
 	switchMu sync.Mutex
 	manager  *pi.Manager
 	ws       string // current workspace dir
+	coreType string // "pi" or "omp"
 	lastErr  string
 	started  bool
 }
@@ -78,11 +90,22 @@ func NewApp() *App {
 	return &App{}
 }
 
-// startup wires the Pi manager and event forwarding into Wails.
+// startup wires the Pi/Omp manager and event forwarding into Wails.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	settings := readOrdisSettings()
 	a.mu.Lock()
 	a.ws = defaultWorkspace()
+	a.coreType = settings.CoreType
+	if envCore := os.Getenv("ORDIS_AGENT_CORE"); envCore != "" {
+		envCore = strings.ToLower(strings.TrimSpace(envCore))
+		if envCore == pi.CoreTypeOmp || envCore == pi.CoreTypePi {
+			a.coreType = envCore
+		}
+	}
+	if a.coreType == "" {
+		a.coreType = pi.CoreTypePi
+	}
 	a.mu.Unlock()
 	a.manager = pi.NewManager(a.onPiEvent, a.onPiExit, a.onPiStderr)
 }
@@ -149,17 +172,31 @@ func (a *App) startPiLocked(workspace string) error {
 	if _, err := os.Stat(ws); err != nil {
 		return fmt.Errorf("workspace does not exist: %s", ws)
 	}
-	// Trust project-local .pi/agent files for this run (same behavior
-	// as `pi -a`), keep sessions persistent.
-	args := []string{"--approve"}
+
+	ct := a.coreType
+	if ct == "" {
+		ct = readOrdisSettings().CoreType
+	}
+	if ct == "" {
+		ct = pi.CoreTypePi
+	}
+
+	var args []string
+	if ct == pi.CoreTypeOmp {
+		args = []string{"--auto-approve", "--allow-home"}
+	} else {
+		// Trust project-local .pi/agent files for this run (same behavior
+		// as `pi -a`), keep sessions persistent.
+		args = []string{"--approve"}
+	}
+
 	env := mergeEnvFallbacks()
-	// The pi subprocess must inherit the app environment; exec.Command
-	// does that automatically. We only pin the working directory.
-	if _, err := a.manager.StartIn(ws, args, env); err != nil {
+	if _, err := a.manager.StartInWithCore(ws, ct, args, env); err != nil {
 		a.lastErr = err.Error()
 		return err
 	}
 	a.ws = ws
+	a.coreType = ct
 	a.lastErr = ""
 	a.started = true
 	return nil
@@ -182,9 +219,14 @@ func (a *App) GetSnapshot() Snapshot {
 func (a *App) getSnapshot(includeModels bool) Snapshot {
 	a.mu.Lock()
 	manager := a.manager
+	ct := a.coreType
+	if ct == "" {
+		ct = pi.CoreTypePi
+	}
 	snap := Snapshot{
 		Running:   manager != nil && manager.IsRunning(),
 		Workspace: a.ws,
+		CoreType:  ct,
 		LastError: a.lastErr,
 	}
 	a.mu.Unlock()
@@ -288,7 +330,11 @@ func workspaceStorePath() string {
 	if p := os.Getenv("ORDIS_WS_STORE"); p != "" {
 		return p
 	}
-	return filepath.Join(piAgentDir(), "ordis-ai-workspaces.json")
+	piPath := filepath.Join(agentDirForCore(pi.CoreTypePi), "ordis-ai-workspaces.json")
+	if fileExists(piPath) {
+		return piPath
+	}
+	return filepath.Join(ordisConfigDir(), "ordis-ai-workspaces.json")
 }
 
 // ListWorkspaces returns registered workspaces merged with workspaces
@@ -493,42 +539,55 @@ func writeWorkspaceStore(ws []WorkspaceRecord) error {
 	return os.Rename(tmp, workspaceStorePath())
 }
 
-// ListSessions scans the pi sessions directory (~/.pi/agent/sessions)
-// and returns persisted sessions for opening/resuming. Results are
-// sorted by most-recently-modified first.
+// ListSessions scans the session directories for all supported agent cores
+// (~/.pi/agent/sessions, ~/.omp/agent/sessions) and returns persisted sessions.
+// Results are deduplicated and sorted by most-recently-modified first.
 func (a *App) ListSessions() ([]SessionInfo, error) {
-	agentDir := piAgentDir()
-	sessionsRoot := filepath.Join(agentDir, "sessions")
+	dirs := []string{
+		filepath.Join(agentDirForCore(pi.CoreTypePi), "sessions"),
+		filepath.Join(agentDirForCore(pi.CoreTypeOmp), "sessions"),
+	}
+
+	seenPaths := map[string]bool{}
 	var out []SessionInfo
 
-	err := filepath.WalkDir(sessionsRoot, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil // skip unreadable entries
+	for _, sessionsRoot := range dirs {
+		if !fileExists(sessionsRoot) && !isDir(sessionsRoot) {
+			continue
 		}
-		if d.IsDir() || !strings.HasSuffix(strings.ToLower(d.Name()), ".jsonl") {
+		_ = filepath.WalkDir(sessionsRoot, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil // skip unreadable entries
+			}
+			if d.IsDir() || !strings.HasSuffix(strings.ToLower(d.Name()), ".jsonl") {
+				return nil
+			}
+			norm := normalizePath(path)
+			if seenPaths[norm] {
+				return nil
+			}
+			seenPaths[norm] = true
+
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			meta := readSessionMeta(path)
+			out = append(out, SessionInfo{
+				ID:           meta.ID,
+				Name:         meta.Name,
+				Path:         path,
+				Workspace:    meta.Cwd,
+				UpdatedAt:    info.ModTime().UnixMilli(),
+				MessageCount: meta.MessageCount,
+			})
 			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return nil
-		}
-		meta := readSessionMeta(path)
-		out = append(out, SessionInfo{
-			ID:           meta.ID,
-			Name:         meta.Name,
-			Path:         path,
-			Workspace:    meta.Cwd,
-			UpdatedAt:    info.ModTime().UnixMilli(),
-			MessageCount: meta.MessageCount,
 		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt > out[j].UpdatedAt })
-	if len(out) > 200 {
-		out = out[:200]
+	if len(out) > 300 {
+		out = out[:300]
 	}
 	return out, nil
 }
@@ -586,7 +645,7 @@ func (a *App) DeleteSession(sessionPath string) error {
 	a.switchMu.Lock()
 	defer a.switchMu.Unlock()
 
-	target, err := deletableSessionPath(sessionPath)
+	target, err := a.deletableSessionPath(sessionPath)
 	if err != nil {
 		return err
 	}
@@ -631,7 +690,7 @@ func (a *App) DeleteSession(sessionPath string) error {
 
 // deletableSessionPath accepts only real .jsonl files below Pi's sessions
 // directory. Resolving symlinks prevents a linked file from escaping it.
-func deletableSessionPath(sessionPath string) (string, error) {
+func (a *App) deletableSessionPath(sessionPath string) (string, error) {
 	if strings.TrimSpace(sessionPath) == "" {
 		return "", fmt.Errorf("session path is empty")
 	}
@@ -649,13 +708,27 @@ func deletableSessionPath(sessionPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve session path: %w", err)
 	}
-	root, err := filepath.EvalSymlinks(filepath.Join(piAgentDir(), "sessions"))
-	if err != nil {
-		return "", fmt.Errorf("resolve sessions directory: %w", err)
+
+	allowedRoots := []string{
+		filepath.Join(agentDirForCore(pi.CoreTypePi), "sessions"),
+		filepath.Join(agentDirForCore(pi.CoreTypeOmp), "sessions"),
 	}
-	rel, err := filepath.Rel(root, target)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return "", fmt.Errorf("session is outside the Pi sessions directory")
+
+	allowed := false
+	for _, root := range allowedRoots {
+		evalRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(evalRoot, target)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			allowed = true
+			break
+		}
+	}
+
+	if !allowed {
+		return "", fmt.Errorf("session is outside the agent sessions directories")
 	}
 	return target, nil
 }
@@ -674,8 +747,26 @@ func (a *App) restartPiIn(workspace string) error {
 	return a.startPiLocked(workspace)
 }
 
-// piAgentDir returns ~/.pi/agent (respects PI_HOME-ish overrides).
-func piAgentDir() string {
+// agentDir returns the storage directory of the currently active core.
+func (a *App) agentDir() string {
+	a.mu.Lock()
+	ct := a.coreType
+	a.mu.Unlock()
+	return agentDirForCore(ct)
+}
+
+// agentDirForCore returns ~/.omp/agent or ~/.pi/agent depending on the core.
+func agentDirForCore(coreType string) string {
+	ct := strings.ToLower(strings.TrimSpace(coreType))
+	if ct == pi.CoreTypeOmp {
+		if p := os.Getenv("OMP_AGENT_DIR"); p != "" {
+			return p
+		}
+		if u, err := user.Current(); err == nil {
+			return filepath.Join(u.HomeDir, ".omp", "agent")
+		}
+		return filepath.Join(os.Getenv("HOME"), ".omp", "agent")
+	}
 	if p := os.Getenv("PI_AGENT_DIR"); p != "" {
 		return p
 	}
@@ -683,6 +774,170 @@ func piAgentDir() string {
 		return filepath.Join(u.HomeDir, ".pi", "agent")
 	}
 	return filepath.Join(os.Getenv("HOME"), ".pi", "agent")
+}
+
+// piAgentDir returns ~/.pi/agent (backward-compatible).
+func piAgentDir() string {
+	return agentDirForCore(pi.CoreTypePi)
+}
+
+// OrdisSettings persists user-chosen engine configurations across restarts.
+type OrdisSettings struct {
+	CoreType string `json:"coreType"`
+}
+
+func ordisSettingsPath() string {
+	if p := os.Getenv("ORDIS_SETTINGS_STORE"); p != "" {
+		return p
+	}
+	return filepath.Join(ordisConfigDir(), "ordis-ai-settings.json")
+}
+
+func ordisConfigDir() string {
+	if p := os.Getenv("ORDIS_CONFIG_DIR"); p != "" {
+		return p
+	}
+	if u, err := user.Current(); err == nil {
+		return filepath.Join(u.HomeDir, ".ordis-ai")
+	}
+	return filepath.Join(os.Getenv("HOME"), ".ordis-ai")
+}
+
+func readOrdisSettings() OrdisSettings {
+	data, err := os.ReadFile(ordisSettingsPath())
+	if err != nil {
+		return OrdisSettings{CoreType: defaultCoreType()}
+	}
+	var s OrdisSettings
+	if err := json.Unmarshal(data, &s); err != nil || (s.CoreType != pi.CoreTypePi && s.CoreType != pi.CoreTypeOmp) {
+		return OrdisSettings{CoreType: defaultCoreType()}
+	}
+	return s
+}
+
+func writeOrdisSettings(s OrdisSettings) error {
+	path := ordisSettingsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func defaultCoreType() string {
+	if c := os.Getenv("ORDIS_AGENT_CORE"); c != "" {
+		c = strings.ToLower(strings.TrimSpace(c))
+		if c == pi.CoreTypeOmp || c == pi.CoreTypePi {
+			return c
+		}
+	}
+	return pi.CoreTypePi
+}
+
+// GetCoreType returns the currently active agent core ("pi" or "omp").
+func (a *App) GetCoreType() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.coreType == "" {
+		return pi.CoreTypePi
+	}
+	return a.coreType
+}
+
+// GetAvailableCores inspects the system and returns metadata for supported cores.
+func (a *App) GetAvailableCores() []CoreInfo {
+	cores := []struct {
+		id   string
+		name string
+		desc string
+	}{
+		{
+			id:   pi.CoreTypePi,
+			name: "Pi (Coding Agent)",
+			desc: "轻量级原生编码代理核心，支持基础文件读写与模型推理",
+		},
+		{
+			id:   pi.CoreTypeOmp,
+			name: "Oh My Pi (OMP)",
+			desc: "增强型全能编码代理核心，支持多子代理并行任务、丰富工具链及扩展协议",
+		},
+	}
+	out := make([]CoreInfo, 0, len(cores))
+	for _, c := range cores {
+		binPath, err := pi.FindCore(c.id)
+		out = append(out, CoreInfo{
+			ID:          c.id,
+			Name:        c.name,
+			Description: c.desc,
+			Available:   err == nil && binPath != "",
+			Path:        binPath,
+			AgentDir:    agentDirForCore(c.id),
+		})
+	}
+	return out
+}
+
+// SwitchCore switches the active agent core (e.g. "pi" or "omp"), restarts
+// the subprocess in the current workspace, preserves active session context if any,
+// and returns the refreshed snapshot.
+func (a *App) SwitchCore(coreType string) (Snapshot, error) {
+	a.switchMu.Lock()
+	defer a.switchMu.Unlock()
+
+	ct := strings.ToLower(strings.TrimSpace(coreType))
+	if ct != pi.CoreTypePi && ct != pi.CoreTypeOmp {
+		return Snapshot{}, fmt.Errorf("unsupported agent core: %s (supported: pi, omp)", coreType)
+	}
+
+	if _, err := pi.FindCore(ct); err != nil {
+		return Snapshot{}, fmt.Errorf("agent core %q not available: %w", ct, err)
+	}
+
+	// If there's an active session open, preserve its path to resume in the new core
+	var activeSessionPath string
+	if a.manager != nil && a.manager.IsRunning() {
+		if resp, err := a.manager.Request(pi.Command{Type: "get_state"}, 3*time.Second); err == nil && resp != nil && resp.Success {
+			var state struct {
+				SessionFile string `json:"sessionFile"`
+			}
+			if json.Unmarshal(resp.Data, &state) == nil && state.SessionFile != "" && fileExists(state.SessionFile) {
+				activeSessionPath = state.SessionFile
+			}
+		}
+	}
+
+	// Persist the selected core type
+	_ = writeOrdisSettings(OrdisSettings{CoreType: ct})
+
+	a.mu.Lock()
+	a.coreType = ct
+	ws := a.ws
+	a.mu.Unlock()
+
+	if err := a.restartPiIn(ws); err != nil {
+		return Snapshot{}, fmt.Errorf("switch core restart failed: %w", err)
+	}
+
+	// Re-attach active session to the newly started core
+	if activeSessionPath != "" && a.manager != nil && a.manager.IsRunning() {
+		_, _ = a.manager.Request(pi.Command{Type: "switch_session", Extra: map[string]any{
+			"sessionPath": activeSessionPath,
+		}}, 15*time.Second)
+	}
+
+	return a.getSnapshot(true), nil
+}
+
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }
 
 // sessionMeta is the minimal parsed info from a session file header.

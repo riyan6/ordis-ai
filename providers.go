@@ -27,10 +27,10 @@ type ProviderInfo struct {
 	Disabled        bool   `json:"disabled"`
 }
 
-// ListProviders returns the persisted providers configured in Pi's auth,
-// models, and settings files. Secret values are never decoded into the result.
+// ListProviders returns the persisted providers configured in the active agent
+// core's auth, models, and settings files. Secret values are never decoded into the result.
 func (a *App) ListProviders() ([]ProviderInfo, error) {
-	return listProvidersFromDir(piAgentDir())
+	return listProvidersFromDir(a.agentDir())
 }
 
 // DeleteProvider removes persisted Pi configuration and disables the provider
@@ -44,7 +44,8 @@ func (a *App) DeleteProvider(providerID string) ([]ProviderInfo, error) {
 	a.switchMu.Lock()
 	defer a.switchMu.Unlock()
 
-	updates, changed, err := buildProviderDeletion(piAgentDir(), providerID)
+	agentDir := a.agentDir()
+	updates, changed, err := buildProviderDeletion(agentDir, providerID)
 	if err != nil {
 		return nil, err
 	}
@@ -61,10 +62,10 @@ func (a *App) DeleteProvider(providerID string) ([]ProviderInfo, error) {
 		workspace := a.ws
 		a.mu.Unlock()
 		if err := a.restartPiIn(workspace); err != nil {
-			return nil, fmt.Errorf("provider was deleted, but Pi restart failed: %w", err)
+			return nil, fmt.Errorf("provider was deleted, but agent core restart failed: %w", err)
 		}
 	}
-	return listProvidersFromDir(piAgentDir())
+	return listProvidersFromDir(agentDir)
 }
 
 func listProvidersFromDir(agentDir string) ([]ProviderInfo, error) {

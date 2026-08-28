@@ -7,8 +7,12 @@
  * - Unified Model + Thinking picker in input composer
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { usePiSession, type ProviderInfo } from "./use-pi-session";
-import { Message, WorkingIndicator } from "./components/Message";
+import { usePiSession, type ProviderInfo, type CoreInfo } from "./use-pi-session";
+import {
+	ConversationTurnView,
+	groupMessagesIntoTurns,
+	WorkingIndicator,
+} from "./components/Message";
 import {
 	Plus,
 	Folder,
@@ -19,13 +23,13 @@ import {
 	MoreHorizontal,
 	Trash2,
 	Bot,
+	Cpu,
 	Palette,
 	Check,
 	Info,
-	X
+	X,
 } from "lucide-react";
 import { Composer } from "./components/Composer";
-
 export default function App() {
 	const {
 		running,
@@ -41,6 +45,8 @@ export default function App() {
 		sessions,
 		workspaces,
 		providers,
+		coreType,
+		availableCores,
 		currentWorkspace,
 		switching,
 		start,
@@ -60,7 +66,11 @@ export default function App() {
 		switchModel,
 		changeThinking,
 		answerDialog,
+		switchCore,
+		loadAvailableCores,
 	} = usePiSession();
+
+	const [settingsInitialPage, setSettingsInitialPage] = useState<"core" | "providers" | "theme">("core");
 
 	const [input, setInput] = useState("");
 	const [settingsOpen, setSettingsOpen] = useState(false);
@@ -73,14 +83,6 @@ export default function App() {
 
 	const listRef = useRef<HTMLDivElement>(null);
 	const inputRef = useRef<HTMLTextAreaElement>(null);
-
-	// Auto-scroll on new content
-	useEffect(() => {
-		const el = listRef.current;
-		if (!el) return;
-		const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 250;
-		if (nearBottom) el.scrollTop = el.scrollHeight;
-	}, [messages, agentBusy]);
 
 	useEffect(() => {
 		inputRef.current?.focus();
@@ -306,7 +308,9 @@ export default function App() {
 					<div className="p-2.5 mt-auto">
 						<button
 							onClick={() => {
+								setSettingsInitialPage("core");
 								setSettingsOpen(true);
+								void loadAvailableCores();
 								void loadProviders();
 							}}
 							className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[14px] text-neutral-600 hover:text-neutral-900 hover:bg-[#f0f0f0] transition-colors duration-150"
@@ -347,6 +351,23 @@ export default function App() {
 								{currentSessionTitle}
 							</span>
 						</div>
+					</div>
+
+					{/* Right: Active Core Chip */}
+					<div className="flex items-center gap-2 px-4 wails-no-drag">
+						<button
+							onClick={() => {
+								setSettingsInitialPage("core");
+								setSettingsOpen(true);
+								void loadAvailableCores();
+								void loadProviders();
+							}}
+							className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[12px] font-medium bg-[#f5f5f5] hover:bg-[#ebebeb] text-neutral-700 transition-colors border border-black/[0.05]"
+							title="点击查看 / 切换 Agent 核心"
+						>
+							<Cpu className="w-3.5 h-3.5 text-neutral-500" />
+							<span>{coreType === "omp" ? "OMP 核心" : "Pi 核心"}</span>
+						</button>
 					</div>
 				</header>
 
@@ -412,15 +433,15 @@ export default function App() {
 								<div className="flex-1 flex flex-col min-h-0">
 									<div
 										ref={listRef}
-										className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 space-y-4 select-text"
+										className="flex-1 overflow-y-auto px-4 sm:px-6 py-6 select-text"
 									>
-										<div className="max-w-4xl mx-auto space-y-4">
-											{messages.map((m) => (
-												<Message key={m.id} message={m} streaming={m.streaming} />
+										<div className="max-w-4xl mx-auto space-y-6">
+											{groupMessagesIntoTurns(messages, agentBusy).map((turn) => (
+												<ConversationTurnView key={turn.id} turn={turn} />
 											))}
 
-											{/* Working indicator when agent is busy and waiting for response */}
-											{agentBusy && !messages.some((m) => m.streaming) && (
+											{/* Working indicator when agent is busy and no messages yet */}
+											{agentBusy && messages.length === 0 && (
 												<div className="my-3">
 													<WorkingIndicator />
 												</div>
@@ -454,11 +475,15 @@ export default function App() {
 			{settingsOpen && (
 				<SettingsModal
 					onClose={() => setSettingsOpen(false)}
+					initialPage={settingsInitialPage}
 					currentModel={currentModel}
 					models={models}
 					providers={providers}
+					coreType={coreType}
+					availableCores={availableCores}
 					onSwitchModel={switchModel}
 					onDeleteProvider={deleteProvider}
+					onSwitchCore={switchCore}
 				/>
 			)}
 
@@ -471,23 +496,55 @@ export default function App() {
 /** Settings window with navigation on the left and page content on the right. */
 function SettingsModal({
 	onClose,
+	initialPage = "core",
 	currentModel,
 	models,
 	providers,
+	coreType,
+	availableCores,
 	onSwitchModel,
 	onDeleteProvider,
+	onSwitchCore,
 }: {
 	onClose: () => void;
+	initialPage?: "core" | "providers" | "theme";
 	currentModel?: { id: string; name?: string; provider?: string } | null;
 	models: Array<{ id: string; name: string; provider: string }>;
 	providers: ProviderInfo[];
+	coreType: string;
+	availableCores: CoreInfo[];
 	onSwitchModel: (provider: string, modelId: string) => Promise<void>;
 	onDeleteProvider: (providerID: string) => Promise<void>;
+	onSwitchCore: (core: string) => Promise<void>;
 }) {
-	const [page, setPage] = useState<"providers" | "theme">("providers");
+	const [page, setPage] = useState<"core" | "providers" | "theme">(initialPage);
 	const [selectedProvider, setSelectedProvider] = useState("");
 	const [deleting, setDeleting] = useState(false);
 	const [deleteError, setDeleteError] = useState("");
+	const [switchingCoreId, setSwitchingCoreId] = useState<string | null>(null);
+	const [coreSwitchError, setCoreSwitchError] = useState("");
+
+	const allCores: CoreInfo[] =
+		availableCores && availableCores.length > 0
+			? availableCores
+			: [
+					{
+						id: "pi",
+						name: "Pi (Coding Agent)",
+						description: "轻量级原生编码代理核心，支持基础文件读写与模型推理",
+						available: true,
+						path: "",
+						agentDir: "~/.pi/agent",
+					},
+					{
+						id: "omp",
+						name: "Oh My Pi (OMP)",
+						description: "增强型全能编码代理核心，支持多子代理并行任务、丰富工具链及扩展协议",
+						available: true,
+						path: "",
+						agentDir: "~/.omp/agent",
+					},
+			  ];
 
 	const displayProviders: ProviderInfo[] = providers
 		.filter((provider) => !provider.disabled)
@@ -521,7 +578,7 @@ function SettingsModal({
 	const deleteSelectedProvider = async () => {
 		if (!selected?.deletable || deleting) return;
 		const confirmed = window.confirm(
-			`确定删除供应商“${selected.id}”吗？\n\n该供应商及其全部模型会从 ordis-ai 中隐藏，同时删除 Pi 中保存的凭据和自定义模型配置。此操作无法撤销。`,
+			`确定删除供应商“${selected.id}”吗？\n\n该供应商及其全部模型会从 ordis-ai 中隐藏，同时删除当前核心中保存的凭据和自定义模型配置。此操作无法撤销。`,
 		);
 		if (!confirmed) return;
 		setDeleting(true);
@@ -542,6 +599,18 @@ function SettingsModal({
 					<div className="px-3 pb-2 text-[12px] font-semibold tracking-wide text-neutral-400">模型与服务</div>
 					<button
 						type="button"
+						onClick={() => setPage("core")}
+						className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] text-left transition-colors ${
+							page === "core"
+								? "bg-[#ededed] text-neutral-900 font-medium"
+								: "text-neutral-600 hover:bg-black/[0.04]"
+						}`}
+					>
+						<Cpu className="w-4 h-4" />
+						<span>Agent 核心</span>
+					</button>
+					<button
+						type="button"
 						onClick={() => setPage("providers")}
 						className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[14px] text-left transition-colors ${
 							page === "providers"
@@ -552,7 +621,6 @@ function SettingsModal({
 						<Bot className="w-4 h-4" />
 						<span>模型与供应商</span>
 					</button>
-
 					<div className="px-3 pt-7 pb-2 text-[12px] font-semibold tracking-wide text-neutral-400">外观</div>
 					<button
 						type="button"
@@ -576,7 +644,7 @@ function SettingsModal({
 				<section className="min-w-0 flex-1 flex flex-col bg-white">
 					<header className="h-[74px] flex-shrink-0 flex items-center justify-between px-8 border-b border-black/[0.08]">
 						<h2 className="text-[20px] font-semibold text-neutral-900">
-							{page === "providers" ? "模型与供应商" : "主题"}
+							{page === "core" ? "Agent 核心" : page === "providers" ? "模型与供应商" : "主题"}
 						</h2>
 						<button
 							type="button"
@@ -588,15 +656,138 @@ function SettingsModal({
 						</button>
 					</header>
 
-					{page === "providers" ? (
-						<div className="min-h-0 flex-1 flex flex-col px-8 py-6">
-							<div className="mb-5">
-								<h3 className="text-[15px] font-semibold text-neutral-900">Pi 供应商配置</h3>
+					{page === "core" ? (
+						<div className="min-h-0 flex-1 flex flex-col px-8 py-6 overflow-y-auto">
+							<div className="mb-6">
+								<h3 className="text-[15px] font-semibold text-neutral-900">Agent 核心引擎</h3>
 								<p className="mt-1 text-[13px] leading-relaxed text-neutral-500">
-									删除供应商后，其模型会同时从设置和聊天模型列表中隐藏。API Key 不会显示在界面中。
+									选择驱动 ordis-ai 的 AI 编码代理核心。核心切换会自动持久化并在下次启动时保留。
 								</p>
+								{coreSwitchError && (
+									<div className="mt-3 rounded-lg bg-rose-50 px-3.5 py-2.5 text-[12px] text-rose-600">
+										{coreSwitchError}
+									</div>
+								)}
 							</div>
 
+							<div className="space-y-4 max-w-2xl">
+								{allCores.map((core) => {
+									const isActive = coreType === core.id;
+									const isSwitchingThis = switchingCoreId === core.id;
+									return (
+										<div
+											key={core.id}
+											className={`p-5 rounded-2xl border transition-all ${
+												isActive
+													? "border-neutral-900 bg-[#fafafa] shadow-xs"
+													: "border-black/[0.08] hover:border-black/[0.15] bg-white"
+											}`}
+										>
+											<div className="flex items-start justify-between gap-4">
+												<div className="min-w-0 flex-1">
+													<div className="flex items-center gap-2.5">
+														<span className="text-[16px] font-semibold text-neutral-900">
+															{core.name}
+														</span>
+														{isActive && (
+															<span className="px-2 py-0.5 rounded-full bg-neutral-900 text-white text-[11px] font-medium">
+																当前激活
+															</span>
+														)}
+														{!core.available && (
+															<span className="px-2 py-0.5 rounded-full bg-neutral-100 text-neutral-500 text-[11px] font-medium">
+																未检测到
+															</span>
+														)}
+													</div>
+													<p className="mt-1.5 text-[13px] leading-relaxed text-neutral-600">
+														{core.description}
+													</p>
+													<div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-neutral-400">
+														<span>
+															路径：
+															<code className="text-neutral-600 bg-black/[0.04] px-1.5 py-0.5 rounded text-[11px]">
+																{core.path || (core.available ? "系统 PATH" : "未安装")}
+															</code>
+														</span>
+														{core.agentDir && (
+															<span>
+																配置：
+																<code className="text-neutral-600 bg-black/[0.04] px-1.5 py-0.5 rounded text-[11px]">
+																	{core.agentDir}
+																</code>
+															</span>
+														)}
+													</div>
+												</div>
+
+												<div className="flex-shrink-0 pt-0.5">
+													{isActive ? (
+														<span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-700 text-[13px] font-medium border border-emerald-200">
+															<Check className="w-4 h-4" />
+															运行中
+														</span>
+													) : (
+														<button
+															type="button"
+															disabled={!core.available || Boolean(switchingCoreId)}
+															onClick={async () => {
+																if (isSwitchingThis || !core.available) return;
+																setSwitchingCoreId(core.id);
+																setCoreSwitchError("");
+																try {
+																	await onSwitchCore(core.id);
+																} catch (e: unknown) {
+																	const err = e instanceof Error ? e.message : String(e);
+																	setCoreSwitchError(err);
+																} finally {
+																	setSwitchingCoreId(null);
+																}
+															}}
+															className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-[13px] font-medium disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+														>
+															{isSwitchingThis ? (
+																<>
+																	<span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+																	<span>切换中…</span>
+																</>
+															) : (
+																<span>切换核心</span>
+															)}
+														</button>
+													)}
+												</div>
+											</div>
+										</div>
+									);
+								})}
+							</div>
+						</div>
+					) : page === "providers" ? (
+						<div className="min-h-0 flex-1 flex flex-col px-8 py-6">
+							<div className="mb-5 flex items-start justify-between gap-4">
+								<div>
+									<div className="flex items-center gap-2">
+										<h3 className="text-[15px] font-semibold text-neutral-900">
+											{coreType === "omp" ? "OMP 核心" : "Pi 核心"} 供应商配置
+										</h3>
+										<span className="px-2 py-0.5 rounded-md bg-[#f0f0f0] text-neutral-700 text-[11px] font-medium">
+											{coreType === "omp" ? "Oh My Pi" : "Pi Coding Agent"}
+										</span>
+									</div>
+									<p className="mt-1 text-[13px] leading-relaxed text-neutral-500">
+										删除供应商后，其模型会从当前核心的设置和聊天模型列表中隐藏。API Key 不会显示在界面中。
+									</p>
+								</div>
+								<button
+									type="button"
+									onClick={() => setPage("core")}
+									className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-black/[0.08] text-[12px] font-medium text-neutral-600 hover:text-neutral-900 hover:bg-[#fafafa] transition-colors"
+								>
+									<Cpu className="w-3.5 h-3.5 text-neutral-500" />
+									<span>切换核心</span>
+								</button>
+							</div>
 							<div className="min-h-0 flex-1 grid grid-cols-[260px_minmax(0,1fr)] border border-black/[0.08] rounded-2xl overflow-hidden bg-white">
 								<div className="min-h-0 border-r border-black/[0.08] p-3 flex flex-col">
 									<div className="px-2 pb-2 flex items-center justify-between">

@@ -12,6 +12,10 @@ export function DeleteProvider(arg1:string):Promise<Array<main.ProviderInfo>>;
 
 export function DeleteSession(arg1:string):Promise<void>;
 
+export function GetAvailableCores():Promise<Array<main.CoreInfo>>;
+
+export function GetCoreType():Promise<string>;
+
 export function GetSnapshot():Promise<main.Snapshot>;
 
 export function GetWorkspace():Promise<main.WorkspaceInfo>;
@@ -39,5 +43,7 @@ export function SetThinking(arg1:string):Promise<void>;
 export function StartPi():Promise<void>;
 
 export function StopPi():Promise<void>;
+
+export function SwitchCore(arg1:string):Promise<main.Snapshot>;
 
 export function SwitchWorkspace(arg1:string):Promise<main.Snapshot>;

@@ -89,3 +89,19 @@ func TestPiSpawnAndState(t *testing.T) {
 	_ = events
 	_ = gotState
 }
+func TestFindCore(t *testing.T) {
+	fakePi := "/custom/bin/fake-pi"
+	fakeOmp := "/custom/bin/fake-omp"
+	t.Setenv("ORDIS_PI_BIN", fakePi)
+	t.Setenv("ORDIS_OMP_BIN", fakeOmp)
+
+	p, err := FindCore(CoreTypePi)
+	if err != nil || p != fakePi {
+		t.Fatalf("FindCore(pi) = (%q, %v), want %q", p, err, fakePi)
+	}
+
+	o, err := FindCore(CoreTypeOmp)
+	if err != nil || o != fakeOmp {
+		t.Fatalf("FindCore(omp) = (%q, %v), want %q", o, err, fakeOmp)
+	}
+}

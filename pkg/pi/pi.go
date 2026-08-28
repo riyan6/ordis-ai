@@ -17,6 +17,11 @@ import (
 	"time"
 )
 
+const (
+	CoreTypePi  = "pi"
+	CoreTypeOmp = "omp"
+)
+
 // Command is a single RPC command. Type is e.g. "prompt", "abort",
 // "get_state", "set_model", "get_messages", "bash".
 type Command struct {
@@ -112,22 +117,27 @@ func (m *Manager) Start(args []string, env []string) (*Session, error) {
 }
 
 // StartIn is Start with an explicit working directory. If dir is empty
-// the current process working directory is used.
+// the current process working directory is used. Defaults to Pi core.
 func (m *Manager) StartIn(dir string, args []string, env []string) (*Session, error) {
+	return m.StartInWithCore(dir, CoreTypePi, args, env)
+}
+
+// StartInWithCore spawns the specified core ("pi" or "omp") in dir with extra args.
+func (m *Manager) StartInWithCore(dir string, coreType string, args []string, env []string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, fmt.Errorf("manager is closed")
 	}
 	if m.cmd != nil {
-		return nil, fmt.Errorf("pi is already running")
+		return nil, fmt.Errorf("agent core is already running")
 	}
 
-	piBin, err := findPi()
+	coreBin, err := FindCore(coreType)
 	if err != nil {
 		return nil, err
 	}
-	inv, err := resolvePiCommand(piBin)
+	inv, err := resolvePiCommand(coreBin)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +145,7 @@ func (m *Manager) StartIn(dir string, args []string, env []string) (*Session, er
 	cmdArgs := append([]string{"--mode", "rpc"}, args...)
 	if inv.ViaCmd {
 		// cmd.exe /c <shim> --mode rpc ...
-		cmdArgs = append([]string{"/c", piBin}, cmdArgs...)
+		cmdArgs = append([]string{"/c", coreBin}, cmdArgs...)
 		inv.Executable = "cmd.exe"
 	} else if len(inv.Args) > 0 {
 		cmdArgs = append(inv.Args, cmdArgs...)
@@ -161,7 +171,7 @@ func (m *Manager) StartIn(dir string, args []string, env []string) (*Session, er
 		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start pi: %w", err)
+		return nil, fmt.Errorf("start agent core: %w", err)
 	}
 
 	m.cmd = cmd
@@ -386,6 +396,53 @@ func (m *Manager) Close() {
 	}
 }
 
+// FindCore locates the executable for the given core ("pi" or "omp").
+func FindCore(coreType string) (string, error) {
+	ct := strings.ToLower(strings.TrimSpace(coreType))
+	if ct == CoreTypeOmp {
+		return findOmp()
+	}
+	return findPi()
+}
+
+// findOmp locates the omp executable: explicit env override, then PATH,
+// then common install locations.
+func findOmp() (string, error) {
+	if p := os.Getenv("ORDIS_OMP_BIN"); p != "" {
+		return p, nil
+	}
+	for _, name := range []string{"omp", "omp.cmd", "omp.exe", "omp.ps1"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
+		}
+	}
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".bun", "bin", "omp"),
+			filepath.Join(home, ".bun", "bin", "omp.exe"),
+			filepath.Join(home, ".npm-global", "bin", "omp"),
+			filepath.Join(home, ".local", "bin", "omp"),
+		)
+	}
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		candidates = append(candidates, filepath.Join(appData, "npm", "omp.cmd"))
+	}
+	if npmGlobal := os.Getenv("NPM_GLOBAL"); npmGlobal != "" {
+		candidates = append(candidates, filepath.Join(npmGlobal, "omp.cmd"))
+	}
+	candidates = append(candidates,
+		"/opt/homebrew/bin/omp",
+		"/usr/local/bin/omp",
+	)
+	for _, c := range candidates {
+		if c != "" && fileExists(c) {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("omp executable not found on PATH or common install locations; install with bun / npm or set ORDIS_OMP_BIN")
+}
+
 // findPi locates the pi executable: explicit env override, then PATH,
 // then common install locations.
 func findPi() (string, error) {
@@ -397,11 +454,24 @@ func findPi() (string, error) {
 			return p, nil
 		}
 	}
-	// npm global prefix fallback on Windows
-	candidates := []string{
-		os.Getenv("APPDATA") + `\npm\pi.cmd`,
-		os.Getenv("NPM_GLOBAL") + `\pi.cmd`,
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".npm-global", "bin", "pi"),
+			filepath.Join(home, ".local", "bin", "pi"),
+			filepath.Join(home, ".bun", "bin", "pi"),
+		)
 	}
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		candidates = append(candidates, filepath.Join(appData, "npm", "pi.cmd"))
+	}
+	if npmGlobal := os.Getenv("NPM_GLOBAL"); npmGlobal != "" {
+		candidates = append(candidates, filepath.Join(npmGlobal, "pi.cmd"))
+	}
+	candidates = append(candidates,
+		"/opt/homebrew/bin/pi",
+		"/usr/local/bin/pi",
+	)
 	for _, c := range candidates {
 		if c != "" && fileExists(c) {
 			return c, nil

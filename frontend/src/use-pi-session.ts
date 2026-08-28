@@ -29,6 +29,9 @@ import {
 	AddWorkspaceDialog,
 	SwitchWorkspace,
 	SendDialogResponse,
+	GetCoreType,
+	GetAvailableCores,
+	SwitchCore,
 } from "../wailsjs/go/main/App";
 import type {
 	PiEvent,
@@ -96,6 +99,14 @@ export interface ProviderInfo {
 	disabled: boolean;
 }
 
+export interface CoreInfo {
+	id: string;
+	name: string;
+	description: string;
+	available: boolean;
+	path: string;
+	agentDir: string;
+}
 let seq = 0;
 function nextId(): string {
 	return `m${++seq}-${Date.now().toString(36)}`;
@@ -130,6 +141,8 @@ export function usePiSession() {
 	const [sessions, setSessions] = useState<SessionInfo[]>([]);
 	const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
 	const [providers, setProviders] = useState<ProviderInfo[]>([]);
+	const [coreType, setCoreType] = useState<string>("pi");
+	const [availableCores, setAvailableCores] = useState<CoreInfo[]>([]);
 	const disabledProviderIDs = useMemo(
 		() => new Set(providers.filter((provider) => provider.disabled).map((provider) => provider.id)),
 		[providers],
@@ -438,6 +451,51 @@ export function usePiSession() {
 			setLastError(String(e?.message ?? e));
 		}
 	}, [loadSessions]);
+	const loadAvailableCores = useCallback(async () => {
+		try {
+			const list = await GetAvailableCores();
+			setAvailableCores(Array.isArray(list) ? list : []);
+		} catch {
+			setAvailableCores([]);
+		}
+	}, []);
+
+	const switchCore = useCallback(
+		async (newCore: string) => {
+			setSwitching(true);
+			switchingRef.current = true;
+			streamRef.current = null;
+			setMessages([]);
+			setTools([]);
+			try {
+				const snap = await SwitchCore(newCore);
+				if (snap.coreType) setCoreType(snap.coreType);
+				setRunning(snap.running);
+				if (snap.running) {
+					if (Array.isArray(snap.messages)) {
+						setMessages(snap.messages.map((m: PiMessage) => fromPiMessage(m)));
+					}
+					if (Array.isArray(snap.models)) setModels(snap.models);
+					if (snap.state) setState(snap.state);
+					if (snap.state?.isStreaming) setBusy(true);
+				} else {
+					setRunning(false);
+					setLastError(snap.lastError ?? "");
+				}
+				setWorkspace(snap.workspace ?? "");
+				setLastError("");
+				await Promise.all([loadSessions(), loadWorkspaces(), loadProviders(), loadAvailableCores()]);
+			} catch (e: any) {
+				setLastError(String(e?.message ?? e));
+				throw e;
+			} finally {
+				switchingRef.current = false;
+				setSwitching(false);
+			}
+		},
+		[loadSessions, loadWorkspaces, loadProviders, loadAvailableCores, setBusy],
+	);
+
 
 	const handleEvent = useCallback(
 		(raw: string | any) => {
@@ -635,6 +693,8 @@ export function usePiSession() {
 		void loadWorkspaces();
 		// Load the GUI provider denylist before runtime models are shown.
 		void loadProviders();
+		// Load available agent cores.
+		void loadAvailableCores();
 		// Auto-start the Pi agent on launch (no manual click). Show a
 		// loading state while the subprocess spins up.
 		let cancelled = false;
@@ -651,6 +711,7 @@ export function usePiSession() {
 					await new Promise((r) => setTimeout(r, i === 0 ? 800 : 1500));
 					if (cancelled) return;
 					const snap = await GetSnapshot();
+					if (snap.coreType) setCoreType(snap.coreType);
 					if (snap.running) {
 						if (Array.isArray(snap.messages)) {
 							setMessages(snap.messages.map((m: PiMessage) => fromPiMessage(m)));
@@ -705,8 +766,8 @@ export function usePiSession() {
 	const refresh = useCallback(async () => {
 		try {
 			const snap = await GetSnapshot();
+			if (snap.coreType) setCoreType(snap.coreType);
 			if (snap.running) {
-				setRunning(true);
 				if (Array.isArray(snap.messages)) {
 					setMessages(snap.messages.map((m: PiMessage) => fromPiMessage(m)));
 				}
@@ -790,11 +851,29 @@ export function usePiSession() {
 	}, []);
 
 	const newSession = useCallback(async () => {
-		await NewSession();
+		try {
+			await NewSession();
+		} catch (e: unknown) {
+			/* ignore */
+		}
 		streamRef.current = null;
 		setMessages([]);
 		setTools([]);
-	}, []);
+		setState((prev) =>
+			prev
+				? {
+						...prev,
+						sessionId: undefined,
+						sessionFile: undefined,
+						sessionName: undefined,
+						messageCount: 0,
+						pendingMessageCount: 0,
+				  }
+				: null,
+		);
+		void loadSessions();
+		void loadWorkspaces();
+	}, [loadSessions, loadWorkspaces]);
 
 	const switchModel = useCallback(
 		async (provider: string, modelId: string) => {
@@ -853,6 +932,8 @@ export function usePiSession() {
 		sessions,
 		workspaces,
 		providers,
+		coreType,
+		availableCores,
 		currentWorkspace,
 		switching,
 		start,
@@ -864,6 +945,8 @@ export function usePiSession() {
 		loadSessions,
 		loadWorkspaces,
 		loadProviders,
+		loadAvailableCores,
+		switchCore,
 		resume,
 		deleteSession,
 		deleteProvider,

@@ -1,5 +1,27 @@
 export namespace main {
 	
+	export class CoreInfo {
+	    id: string;
+	    name: string;
+	    description: string;
+	    available: boolean;
+	    path: string;
+	    agentDir: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new CoreInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.description = source["description"];
+	        this.available = source["available"];
+	        this.path = source["path"];
+	        this.agentDir = source["agentDir"];
+	    }
+	}
 	export class ProviderInfo {
 	    id: string;
 	    hasCredential: boolean;
@@ -49,6 +71,7 @@ export namespace main {
 	export class Snapshot {
 	    running: boolean;
 	    workspace: string;
+	    coreType: string;
 	    state?: any;
 	    messages?: any;
 	    models?: any;
@@ -62,6 +85,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.running = source["running"];
 	        this.workspace = source["workspace"];
+	        this.coreType = source["coreType"];
 	        this.state = source["state"];
 	        this.messages = source["messages"];
 	        this.models = source["models"];
